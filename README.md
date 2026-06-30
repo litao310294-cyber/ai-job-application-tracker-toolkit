@@ -71,7 +71,7 @@ Job Screening → Excel Tracker → Chat Status Export → AI Analysis → Track
 
 ## What This Project Is Not / 项目边界
 
-This project does not scrape private APIs, bypass verification, automate job applications, or send messages automatically.
+This project does not access non-public platform APIs, handle verification or login checks, perform job application actions, or perform message sending actions.
 
 本项目仅用于个人求职过程中的本地记录和页面可见信息整理；不访问非公开接口，不处理验证码或登录校验，不执行投递或消息发送操作，也不做平台数据采集。
 
