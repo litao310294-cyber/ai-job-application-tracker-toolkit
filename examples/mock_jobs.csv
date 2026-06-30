@@ -1,0 +1,5 @@
+Application Date,Platform,Company,Position,City,Salary Range,Priority Tier,Job Type,JD Keywords,Match Level,Current Status,Next Action
+2026-06-30,BOSS,Example Tech,Java Backend Intern,Beijing,200-300/day,A - High Match,Java Backend,Java; Spring Boot; MySQL; Redis,High,Contacted,Wait for Reply
+2026-06-30,Referral,Sample AI,AI Application Backend Intern,Shanghai,250-350/day,A - High Match,AI Backend,Spring Boot; RAG; Tool Calling; PostgreSQL,High,Replied,Send Resume
+2026-06-30,Official Site,Demo Cloud,Backend Development Intern,Hangzhou,180-260/day,B - Worth Applying,Backend,Java; API; Docker,Medium,Read No Reply,Follow Up
+2026-06-30,Other,Mock Data Lab,Test Engineer Intern,Remote,150-200/day,C - Practice,Other,Testing; SQL; Python,Low,Rejected,Give Up
