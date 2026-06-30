@@ -1,5 +1,11 @@
 # AI Workflow
 
+English Summary:
+This document explains how to use AI prompts for job screening, chat status analysis, tracker updates, daily review, and interview review.
+
+中文摘要：
+本文说明如何使用 AI 提示词完成岗位筛选、聊天状态分析、表格更新、每日复盘和面试复盘。
+
 AI is used as an assistant for summarization, prioritization, and wording. It is not the source of truth.
 
 ## Recommended Inputs

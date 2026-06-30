@@ -1,5 +1,11 @@
 # Workflow
 
+English Summary:
+This document explains the local-first workflow from job screening to Excel tracking, visible chat status export, AI analysis, tracker updates, daily review, and interview review.
+
+中文摘要：
+本文说明从岗位筛选、Excel 跟进、页面可见聊天状态导出、AI 分析、表格更新、每日复盘到面试复盘的完整流程。
+
 This toolkit follows a local-first job application workflow.
 
 ## 1. Screen Jobs

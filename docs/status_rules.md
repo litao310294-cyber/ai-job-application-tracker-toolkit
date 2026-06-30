@@ -1,5 +1,11 @@
 # Status Rules
 
+English Summary:
+This document defines chat action levels and their mapping to Excel tracker statuses and next actions.
+
+中文摘要：
+本文定义聊天行动等级，并说明这些等级如何映射到 Excel 跟进表中的状态和下一步动作。
+
 ## Chat Action Levels
 
 | Level | Rule | Recommended Action |

@@ -1,5 +1,11 @@
 # Compliance Boundary
 
+English Summary:
+This document explains the intended boundary of the toolkit: personal local records, visible page text organization, mock examples, and privacy-safe public sharing.
+
+中文摘要：
+本文说明项目边界：个人本地记录、页面可见文本整理、mock 示例和适合公开分享的隐私保护规则。
+
 This project is a personal local job-search organization toolkit.
 
 ## What It Does
@@ -11,11 +17,11 @@ This project is a personal local job-search organization toolkit.
 
 ## What It Does Not Do
 
-- request private platform APIs
-- bypass verification checks
-- auto-apply to jobs
-- auto-send messages
-- auto-click recruiter action buttons
+- access non-public platform APIs
+- handle verification or login checks
+- perform job application actions
+- perform message sending actions
+- click recruiter action buttons automatically
 - access data that is not visible to the logged-in user
 - include real chat records in public examples
 

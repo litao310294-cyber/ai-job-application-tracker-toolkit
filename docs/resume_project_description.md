@@ -1,5 +1,11 @@
 # Resume Project Description
 
+English Summary:
+This document provides resume-ready descriptions for presenting the project as a local-first AI-assisted job application tracking toolkit.
+
+中文摘要：
+本文提供适合写入简历的项目描述，突出本地优先、AI 辅助、求职跟进、页面可见信息整理和隐私保护。
+
 ## Chinese Version
 
 AI 辅助求职跟进工具包：设计并实现面向个人求职流程的本地效率工具，包含 Excel 求职跟进模板、状态统计仪表盘、招聘聊天状态 TSV 导出 userscript、AI 分析提示词与 mock 示例数据。项目支持投递记录、沟通状态整理、优先级判断、每日复盘和面试复盘，强调 local-first、页面可见信息整理和隐私保护。

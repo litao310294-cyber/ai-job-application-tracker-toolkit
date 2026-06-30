@@ -1,5 +1,9 @@
 # Job Screening Prompt
 
+English purpose: Screen job descriptions before adding them to the tracker.
+
+用途：用于筛选岗位 JD，判断是否值得加入求职跟进表。
+
 You are my job application screening assistant.
 
 I will paste one or more job descriptions. Please help me decide whether each job is worth adding to my job application tracker.

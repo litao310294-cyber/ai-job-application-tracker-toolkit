@@ -1,5 +1,9 @@
 # Excel Append Prompt
 
+English purpose: Convert job notes into rows that can be appended to the Excel tracker.
+
+用途：用于把岗位信息整理成可以追加到 Excel 跟进表的新行。
+
 You are helping me append new job applications to my Excel tracker.
 
 Please convert the following job information into rows matching the `Applications` sheet fields.

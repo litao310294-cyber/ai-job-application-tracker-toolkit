@@ -1,5 +1,11 @@
 # Excel Design
 
+English Summary:
+This document describes the Excel workbook design, including sheets, fields, dropdown options, formulas, formatting, and dashboard metrics.
+
+中文摘要：
+本文说明 Excel 工作簿的设计，包括 sheet、字段、下拉选项、公式、格式和仪表盘统计。
+
 The workbook is designed as a lightweight personal job application tracker.
 
 ## Sheets

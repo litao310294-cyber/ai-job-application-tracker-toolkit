@@ -1,79 +1,100 @@
 # AI Job Application Tracker Toolkit
+> AI 辅助求职跟进工具包
 
-A local-first toolkit for personal job application follow-up, combining an Excel tracker, a recruitment chat status export userscript, and ready-to-use AI prompts.
+This is a local-first personal job application tracking toolkit.
 
-This project is designed for job seekers who want to organize application status, chat follow-up, interview notes, and daily review workflows without relying on screenshots or scattered notes.
+它是一个本地优先的个人求职跟进工具包，用于整理投递记录、聊天状态、AI 分析结果、每日复盘和面试复盘。
 
-## Why This Project
+The toolkit has three core parts:
 
-When job applications increase, it becomes easy to lose track of which companies have been contacted, which messages were read, which messages were delivered, which recruiters replied, and which opportunities already ended.
+本项目由三部分组成：
 
-This toolkit is designed to solve several practical problems:
+- Excel tracker template / 求职跟进 Excel 模板
+- Chat status export userscript / 聊天状态导出用户脚本
+- AI prompt workflow / AI 分析提示词工作流
 
-- application status becomes messy after many submissions
-- read, delivered, replied, and rejected states are hard to track manually
-- taking screenshots for AI analysis is inconvenient
-- interview review notes are often unstructured
-- application count alone does not show reply rate, interview rate, or rejection reasons
+## Overview / 项目简介
 
-## What This Project Includes
+AI Job Application Tracker Toolkit helps job seekers organize application progress, communication status, follow-up actions, and interview review notes in a structured local workflow.
 
-- Excel job application tracker template
-- Dashboard for application, reply, interview, and offer metrics
-- Tampermonkey userscript for exporting visible recruitment chat status into TSV
-- AI prompts for job screening, chat status analysis, Excel updates, daily review, interview review, and HR replies
-- Mock examples for GitHub demonstration
-- Documentation for workflow, status rules, Excel design, and compliance boundary
+AI 辅助求职跟进工具包面向个人求职场景，帮助你用 Excel、用户脚本和 AI 提示词，把岗位筛选、投递记录、聊天状态、后续动作和面试复盘串成一个清晰流程。
 
-## Local-First Positioning
+## Why This Project / 为什么做这个项目
 
-This toolkit is built for personal local information organization.
+When applications increase, status tracking can become messy. It is hard to remember which jobs were contacted, which messages were read, which opportunities received replies, and which ones already ended.
 
-中文定位：
+投递岗位变多以后，状态很容易混乱：哪些已读、哪些送达、哪些有回复、哪些已经拒绝，靠截图和手动记忆都不稳定。
 
-- AI 辅助求职跟进工具包
-- Excel 求职跟进表
-- 招聘聊天状态导出 userscript
-- 可复制使用的 AI prompts
-- 本地优先 local-first
-- 不抓接口
-- 不绕验证码
-- 不自动投递
-- 不自动发送消息
-- 示例全部使用 mock 数据
+This project helps with:
 
-It does not:
+这个项目主要解决：
 
-- request private platform APIs
-- bypass verification checks
-- auto-apply to jobs
-- auto-send messages
-- access data that is not already visible to the logged-in user
-- include real HR names, real company communications, or real screenshots in examples
+- application status becomes messy after many submissions / 投递多后状态混乱
+- read, delivered, replied, and rejected states are hard to track / 已读、送达、回复、拒绝难跟踪
+- screenshot-based AI analysis is inconvenient / 截图给 AI 分析比较麻烦
+- interview review notes are often unstructured / 面试复盘不够结构化
+- application count alone does not show reply rate, interview rate, or rejection reasons / 只看投递数量，看不到回复率、约面率和拒绝原因
 
-The userscript only reads text already displayed on the current browser page and turns it into TSV for personal follow-up.
+## Features / 功能特性
 
-## Workflow
+- Excel job tracker with dropdowns, formulas, conditional formatting, and dashboard metrics  
+  带下拉框、公式、条件格式和仪表盘的求职跟进 Excel 模板
+- Visible chat status export userscript for TSV output  
+  将页面已展示的聊天状态整理为 TSV 的用户脚本
+- AI prompts for job screening, chat analysis, tracker updates, daily review, interview review, and HR replies  
+  覆盖岗位筛选、聊天分析、表格更新、每日复盘、面试复盘和 HR 回复的 AI 提示词
+- Mock examples for public GitHub demonstration  
+  适合公开仓库展示的 mock 示例数据
+- Local-first workflow for personal job-search management  
+  本地优先的个人求职跟进流程
+
+## Workflow / 工作流
 
 ```text
 Job Screening → Excel Tracker → Chat Status Export → AI Analysis → Tracker Update → Daily Review → Interview Review
 ```
 
-1. Use AI prompts to screen job descriptions before adding them to the tracker.
-2. Record selected jobs in the Excel tracker.
-3. Export visible recruitment chat status into TSV when follow-up review is needed.
-4. Ask AI to group messages by action priority.
-5. Update the tracker with read, reply, interview, rejection, and next-action status.
-6. Summarize the day in the daily review sheet.
-7. Record interview questions and weak spots in the interview review sheet.
+1. Screen jobs with AI prompts before adding them to the tracker.  
+   使用 AI 提示词先筛选岗位，再决定是否加入表格。
+2. Record selected jobs in the Excel tracker.  
+   在 Excel 跟进表中记录公司、岗位、平台、状态和下一步动作。
+3. Export visible recruitment chat status into TSV when needed.  
+   需要复盘沟通状态时，将页面已展示的聊天状态导出为 TSV。
+4. Analyze the TSV with AI.  
+   使用 AI 按 P0/P1/P2/P9 分析优先级。
+5. Update the tracker with verified results.  
+   人工确认后更新 Excel 表格。
+6. Summarize daily progress.  
+   每天记录投递效果、问题和明日策略。
+7. Review interviews in a structured way.  
+   用结构化字段复盘面试问题、薄弱点和后续准备。
 
-## What This Project Is Not
+## What This Project Is Not / 项目边界
 
 This project does not scrape private APIs, bypass verification, automate job applications, or send messages automatically.
 
-本项目不抓取非公开接口，不绕过验证码，不自动投递，不自动发送消息，不批量采集招聘数据。它只用于个人求职过程中的本地记录、页面可见信息整理和 AI 辅助分析。
+本项目仅用于个人求职过程中的本地记录和页面可见信息整理；不访问非公开接口，不处理验证码或登录校验，不执行投递或消息发送操作，也不做平台数据采集。
 
-## Repository Structure
+The userscript only reads text already displayed on the current browser page and exports it into TSV for personal follow-up.
+
+用户脚本只读取当前浏览器页面中已经展示出来的文本，并将其整理为 TSV，方便个人求职跟进。
+
+## Quick Start / 快速开始
+
+1. Open `templates/job_tracker_template.xlsx`.  
+   打开 `templates/job_tracker_template.xlsx`。
+2. Fill applications in the `Applications` sheet.  
+   在 `Applications` 表中填写投递记录。
+3. Install `userscripts/job-chat-status-export.user.js` in Tampermonkey.  
+   在 Tampermonkey 中安装 `userscripts/job-chat-status-export.user.js`。
+4. Export visible chat status into TSV.  
+   将页面已展示的聊天状态导出为 TSV。
+5. Paste TSV into an AI tool with `prompts/chat_status_analysis_prompt.md`.  
+   使用 `prompts/chat_status_analysis_prompt.md` 让 AI 分析 TSV。
+6. Update the tracker and review the dashboard.  
+   更新表格并查看仪表盘统计。
+
+## Directory Structure / 目录结构
 
 ```text
 ai-job-application-tracker-toolkit/
@@ -110,58 +131,49 @@ ai-job-application-tracker-toolkit/
    └─ mock_codex_update_prompt.md
 ```
 
-## Quick Start
+## Examples / 示例数据
 
-1. Open `templates/job_tracker_template.xlsx`.
-2. Fill applications in the `Applications` sheet.
-3. Use `userscripts/job-chat-status-export.user.js` in Tampermonkey to export visible chat status as TSV.
-4. Paste the TSV into an AI tool with `prompts/chat_status_analysis_prompt.md`.
-5. Update the Excel tracker using the AI output.
-6. Review progress in the `Dashboard`, `Daily Review`, and `Interview Review` sheets.
+All files under `examples/` use mock data only.
 
-## Excel Tracker
+`examples/` 目录下只包含 mock 示例数据。
 
-The template contains:
+Included examples:
 
-- `Applications`: main job application tracking table
-- `Dashboard`: formula-based metrics
-- `Daily Review`: daily review log
-- `Interview Review`: interview notes and follow-up review
-- `Config`: dropdown options for consistent status management
+示例包括：
 
-The template is empty and contains no real application data.
+- `mock_tracker.xlsx`: mock Excel tracker / mock 求职跟进表
+- `mock_jobs.csv`: mock job list / mock 岗位列表
+- `mock_chat_export.tsv`: mock chat status export / mock 聊天状态导出
+- `mock_ai_input.md`: mock AI input / mock AI 输入
+- `mock_ai_output.md`: mock AI output / mock AI 输出
+- `mock_codex_update_prompt.md`: mock update prompt / mock 更新提示词
 
-## Userscript
+## Privacy & Compliance / 隐私与合规
 
-The userscript exports visible chat list text into TSV with these fields:
+Do not upload real chat records, real HR names, real company communication, real contact information, or real screenshots.
+
+请不要上传真实聊天记录、真实 HR 姓名、真实公司沟通内容、真实联系方式或真实截图。
+
+The template workbook is empty. The example workbook uses mock data only.
+
+模板工作簿为空模板；示例工作簿只使用 mock 数据。
+
+## Resume Usage / 简历写法
+
+Suggested resume description:
+
+简历描述示例：
 
 ```text
-联系人	公司	身份	时间	状态	行动等级	下一步	建议	最后消息	原始文本
+Built a local-first AI-assisted job application tracking toolkit with an Excel tracker template, dashboard metrics, a visible chat status export userscript, reusable AI prompts, and mock examples for privacy-safe demonstration.
 ```
 
-The action levels are:
+```text
+设计并实现本地优先的 AI 辅助求职跟进工具包，包含 Excel 求职跟进模板、状态统计仪表盘、页面可见聊天状态导出用户脚本、AI 分析提示词和脱敏 mock 示例，用于个人求职过程中的状态整理、跟进管理和面试复盘。
+```
 
-- `P0`: needs immediate attention
-- `P1`: read but not replied, can follow up later
-- `P2`: delivered but unread, wait first
-- `P9`: clear rejection or low priority
-
-## AI Prompts
-
-The `prompts/` directory contains copy-ready prompts for:
-
-- screening jobs before adding them to the tracker
-- analyzing exported chat status
-- appending new rows to Excel
-- updating existing rows
-- daily job search review
-- interview review
-- drafting polite HR replies
-
-## Examples
-
-All files under `examples/` use mock data only. Do not upload real chat records, real HR names, real company communication, real contact information, or real screenshots.
-
-## License
+## License / 许可证
 
 MIT License. See [LICENSE](LICENSE).
+
+本项目使用 MIT License，详见 [LICENSE](LICENSE)。

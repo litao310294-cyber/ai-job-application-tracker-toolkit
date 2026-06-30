@@ -1,5 +1,9 @@
 # Excel Status Update Prompt
 
+English purpose: Convert chat analysis or follow-up notes into structured Excel tracker updates.
+
+用途：用于把聊天分析或跟进记录转换成 Excel 跟进表的字段更新。
+
 You are helping me update an existing job application tracker based on chat status.
 
 ## Tracker Fields To Update
