@@ -7,6 +7,7 @@ import java.sql.Statement;
 import java.sql.Timestamp;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
@@ -22,7 +23,7 @@ public class JobFeedbackRepository {
     this.jdbcTemplate = jdbcTemplate;
   }
 
-  public JobFeedbackResponse save(JobFeedbackRequest request) {
+  public JobFeedbackResponse save(Long jobRecordId, JobFeedbackRequest request) {
     String sql = """
         insert into job_feedback (
           job_record_id,
@@ -39,7 +40,7 @@ public class JobFeedbackRepository {
     KeyHolder keyHolder = new GeneratedKeyHolder();
     jdbcTemplate.update(connection -> {
       PreparedStatement ps = connection.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS);
-      ps.setLong(1, request.jobRecordId());
+      ps.setLong(1, jobRecordId);
       ps.setString(2, request.applyStatus());
       ps.setString(3, request.chatStatus());
       ps.setString(4, request.interviewStatus());
@@ -72,6 +73,18 @@ public class JobFeedbackRepository {
         order by created_at desc, id desc
         """;
     return jdbcTemplate.query(sql, mapper(), jobRecordId);
+  }
+
+  public Optional<Long> findJobRecordIdByTaskId(String taskId) {
+    String sql = """
+        select job_record_id
+        from job_analysis
+        where task_id = ?
+        order by id desc
+        limit 1
+        """;
+    List<Long> ids = jdbcTemplate.query(sql, (rs, rowNum) -> rs.getLong("job_record_id"), taskId);
+    return ids.stream().findFirst();
   }
 
   private JobFeedbackResponse findById(Long id) {

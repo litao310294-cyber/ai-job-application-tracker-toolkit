@@ -3,6 +3,7 @@ package com.lt.aijobscreeningagent.dto;
 import java.util.List;
 
 public record JobAnalyzeResponse(
+    Long jobRecordId,
     String taskId,
     String status,
     String decision,

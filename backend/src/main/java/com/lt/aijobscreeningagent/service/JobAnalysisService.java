@@ -43,7 +43,7 @@ public class JobAnalysisService {
     JobAnalyzeResponse response;
 
     if (!llmProperties.isEnabled() || !llmProperties.hasApiKey()) {
-      response = fallbackAnalyze(taskId, request);
+      response = fallbackAnalyze(jobRecordId, taskId, request);
       jobRecordRepository.saveJobAnalysis(jobRecordId, response);
       jobAnalysisCacheService.put(cacheKey, response);
       return response;
@@ -52,6 +52,7 @@ public class JobAnalysisService {
     try {
       LlmAnalyzeResult result = llmClient.analyze(request);
       response = new JobAnalyzeResponse(
+          jobRecordId,
           taskId,
           "success",
           result.decision(),
@@ -64,7 +65,7 @@ public class JobAnalysisService {
           result.suggestedMessage()
       );
     } catch (RuntimeException e) {
-      response = fallbackAnalyze(taskId, request);
+      response = fallbackAnalyze(jobRecordId, taskId, request);
     }
 
     jobRecordRepository.saveJobAnalysis(jobRecordId, response);
@@ -76,7 +77,7 @@ public class JobAnalysisService {
     return jobRecordRepository.findRecentRecords(limit);
   }
 
-  private JobAnalyzeResponse fallbackAnalyze(String taskId, JobAnalyzeRequest request) {
+  private JobAnalyzeResponse fallbackAnalyze(Long jobRecordId, String taskId, JobAnalyzeRequest request) {
     int score = request.ruleScore() != null ? request.ruleScore() : 72;
     String decision = request.ruleConclusion() != null && !request.ruleConclusion().isBlank()
         ? request.ruleConclusion()
@@ -84,6 +85,7 @@ public class JobAnalysisService {
     String direction = detectMockDirection(request);
 
     return new JobAnalyzeResponse(
+        jobRecordId,
         taskId,
         "fallback",
         decision,
