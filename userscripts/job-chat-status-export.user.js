@@ -633,6 +633,23 @@
     不投: '#6b7280'
   };
 
+  const DEFAULT_SCORING_CONFIG = {
+    targetRoles: JOB_FIT_KEYWORDS.strongDirections.concat(JOB_FIT_KEYWORDS.mediumDirections),
+    preferredCities: [],
+    positiveKeywords: JOB_FIT_KEYWORDS.javaStack.concat(JOB_FIT_KEYWORDS.aiStack).concat(JOB_FIT_KEYWORDS.workHigh),
+    negativeKeywords: JOB_FIT_KEYWORDS.risk,
+    hardRejectKeywords: ['电话销售', '纯测试', '驻场实施'],
+    scheduleRiskKeywords: ['6天/周', '7天/周', '12个月', '一年'],
+    roleWeights: {},
+    skillWeights: {},
+    riskWeights: {}
+  };
+
+  let activeScoringConfig = DEFAULT_SCORING_CONFIG;
+  let scoringConfigLoaded = false;
+  let scoringConfigSource = 'default';
+  let scoringConfigStatusText = '默认兜底';
+
   let jobFitLastResult = null;
   let jobFitLastKey = '';
   let jobFitAiResult = null;
@@ -651,6 +668,136 @@
   };
   let jobFitTimer = null;
   let jobFitCollapsed = false;
+
+  function normalizeConfigArray(value) {
+    if (!Array.isArray(value)) return [];
+    return value
+      .map(item => clean(String(item || '')))
+      .filter(Boolean)
+      .slice(0, 50);
+  }
+
+  function normalizeConfigWeights(value, min, max) {
+    const result = {};
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return result;
+
+    Object.keys(value).slice(0, 50).forEach(key => {
+      const cleanKey = clean(String(key || ''));
+      const weight = Number(value[key]);
+      if (!cleanKey || !Number.isFinite(weight)) return;
+      result[cleanKey] = Math.max(min, Math.min(max, Math.round(weight)));
+    });
+
+    return result;
+  }
+
+  function mergeUniqueArrays(base, extra) {
+    return Array.from(new Set([].concat(base || [], extra || []).map(item => clean(String(item || ''))).filter(Boolean)));
+  }
+
+  function mergeScoringConfig(defaultConfig, remoteConfig) {
+    const remoteTargetRoles = normalizeConfigArray(remoteConfig.targetRoles);
+    const remotePositiveKeywords = normalizeConfigArray(remoteConfig.positiveKeywords);
+    const remoteNegativeKeywords = normalizeConfigArray(remoteConfig.negativeKeywords);
+    const remoteHardRejectKeywords = normalizeConfigArray(remoteConfig.hardRejectKeywords);
+    const remoteScheduleRiskKeywords = normalizeConfigArray(remoteConfig.scheduleRiskKeywords);
+
+    return {
+      targetRoles: mergeUniqueArrays(defaultConfig.targetRoles, remoteTargetRoles),
+      preferredCities: mergeUniqueArrays(defaultConfig.preferredCities, normalizeConfigArray(remoteConfig.preferredCities)),
+      positiveKeywords: mergeUniqueArrays(defaultConfig.positiveKeywords, remotePositiveKeywords),
+      negativeKeywords: mergeUniqueArrays(defaultConfig.negativeKeywords, remoteNegativeKeywords),
+      hardRejectKeywords: mergeUniqueArrays(defaultConfig.hardRejectKeywords, remoteHardRejectKeywords),
+      scheduleRiskKeywords: mergeUniqueArrays(defaultConfig.scheduleRiskKeywords, remoteScheduleRiskKeywords),
+      roleWeights: Object.assign({}, defaultConfig.roleWeights || {}, normalizeConfigWeights(remoteConfig.roleWeights, 0, 50)),
+      skillWeights: Object.assign({}, defaultConfig.skillWeights || {}, normalizeConfigWeights(remoteConfig.skillWeights, 0, 20)),
+      riskWeights: Object.assign({}, defaultConfig.riskWeights || {}, normalizeConfigWeights(remoteConfig.riskWeights, -100, 0)),
+      supplementalTargetRoles: remoteTargetRoles,
+      supplementalPositiveKeywords: remotePositiveKeywords,
+      supplementalNegativeKeywords: remoteNegativeKeywords,
+      supplementalHardRejectKeywords: remoteHardRejectKeywords,
+      supplementalScheduleRiskKeywords: remoteScheduleRiskKeywords
+    };
+  }
+
+  function parseRemoteScoringConfig(response) {
+    if (!response || response.exists !== true || response.confirmed !== true || !response.configJson) {
+      throw new Error('scoring config is missing or not confirmed');
+    }
+
+    const config = typeof response.configJson === 'string'
+      ? JSON.parse(response.configJson)
+      : response.configJson;
+
+    if (!config || typeof config !== 'object') {
+      throw new Error('scoring config json is invalid');
+    }
+
+    ['targetRoles', 'preferredCities', 'positiveKeywords', 'negativeKeywords', 'hardRejectKeywords', 'scheduleRiskKeywords'].forEach(field => {
+      if (!Array.isArray(config[field])) throw new Error(`scoring config field ${field} must be an array`);
+    });
+    ['roleWeights', 'skillWeights', 'riskWeights'].forEach(field => {
+      if (!config[field] || typeof config[field] !== 'object' || Array.isArray(config[field])) {
+        throw new Error(`scoring config field ${field} must be an object`);
+      }
+    });
+
+    return config;
+  }
+
+  function loadScoringConfigFromBackend() {
+    return new Promise(resolve => {
+      if (typeof GM_xmlhttpRequest !== 'function') {
+        console.warn('[JobFitScoring] GM_xmlhttpRequest unavailable, using default scoring config.');
+        resolve(false);
+        return;
+      }
+
+      GM_xmlhttpRequest({
+        method: 'GET',
+        url: 'http://localhost:8080/api/profile/scoring-config',
+        timeout: 5000,
+        onload: response => {
+          try {
+            if (response.status < 200 || response.status >= 300) {
+              throw new Error(`HTTP ${response.status}`);
+            }
+            const body = JSON.parse(response.responseText || '{}');
+            const remoteConfig = parseRemoteScoringConfig(body);
+            activeScoringConfig = mergeScoringConfig(DEFAULT_SCORING_CONFIG, remoteConfig);
+            scoringConfigLoaded = true;
+            scoringConfigSource = 'backend';
+            scoringConfigStatusText = '后端用户画像';
+            console.info('[JobFitScoring] Scoring config loaded from backend user profile.');
+            resolve(true);
+          } catch (e) {
+            activeScoringConfig = DEFAULT_SCORING_CONFIG;
+            scoringConfigLoaded = false;
+            scoringConfigSource = 'default';
+            scoringConfigStatusText = '默认兜底';
+            console.warn('[JobFitScoring] Failed to load backend scoring config, using default config.', e);
+            resolve(false);
+          }
+        },
+        onerror: () => {
+          activeScoringConfig = DEFAULT_SCORING_CONFIG;
+          scoringConfigLoaded = false;
+          scoringConfigSource = 'default';
+          scoringConfigStatusText = '默认兜底';
+          console.warn('[JobFitScoring] Backend scoring config request failed, using default config.');
+          resolve(false);
+        },
+        ontimeout: () => {
+          activeScoringConfig = DEFAULT_SCORING_CONFIG;
+          scoringConfigLoaded = false;
+          scoringConfigSource = 'default';
+          scoringConfigStatusText = '默认兜底';
+          console.warn('[JobFitScoring] Backend scoring config request timed out, using default config.');
+          resolve(false);
+        }
+      });
+    });
+  }
 
   function getVisibleJobText() {
     return clean(document.body ? document.body.innerText : '');
@@ -1139,7 +1286,7 @@
     const lower = text.toLowerCase();
     const seen = new Set();
 
-    for (const keyword of keywords) {
+    for (const keyword of (keywords || [])) {
       if (lower.includes(keyword.toLowerCase())) {
         seen.add(keyword);
       }
@@ -1153,12 +1300,13 @@
       java: uniqueMatches(text, JOB_FIT_KEYWORDS.javaStack),
       ai: uniqueMatches(text, JOB_FIT_KEYWORDS.aiStack),
       backend: uniqueMatches(text, ['后端', '服务端', '接口开发', '后端接口', '系统开发', '模块开发']),
-      work: uniqueMatches(text, JOB_FIT_KEYWORDS.workHigh)
+      work: uniqueMatches(text, JOB_FIT_KEYWORDS.workHigh),
+      profile: uniqueMatches(text, activeScoringConfig.positiveKeywords)
     };
   }
 
   function detectRiskFlags(text) {
-    let flags = uniqueMatches(text, JOB_FIT_KEYWORDS.risk);
+    let flags = uniqueMatches(text, mergeUniqueArrays(JOB_FIT_KEYWORDS.risk, activeScoringConfig.negativeKeywords));
 
     if (flags.includes('销售') && !/(销售实习生|销售专员|电话销售|客户销售|销售岗位|销售岗)/.test(text)) {
       flags = flags.filter(flag => flag !== '销售');
@@ -1221,6 +1369,9 @@
       flags = flags.filter(flag => !['资料整理', '内容维护', '文档归档', '客服', '售前'].includes(flag));
     }
 
+    flags = mergeUniqueArrays(flags, uniqueMatches(text, activeScoringConfig.hardRejectKeywords));
+    flags = mergeUniqueArrays(flags, uniqueMatches(text, activeScoringConfig.scheduleRiskKeywords));
+
     return flags;
   }
 
@@ -1233,9 +1384,56 @@
   }
 
   function scoreDirection(text) {
+    const configuredRoles = uniqueMatches(text, activeScoringConfig.targetRoles);
+    const weightedRoles = configuredRoles.filter(role => Object.prototype.hasOwnProperty.call(activeScoringConfig.roleWeights, role));
+    if (weightedRoles.length) {
+      const maxWeight = weightedRoles.reduce((max, role) => Math.max(max, activeScoringConfig.roleWeights[role] || 0), 0);
+      return Math.min(20, Math.max(12, maxWeight));
+    }
     if (uniqueMatches(text, JOB_FIT_KEYWORDS.strongDirections).length) return 20;
     if (uniqueMatches(text, JOB_FIT_KEYWORDS.mediumDirections).length) return 12;
     return 0;
+  }
+
+  function scoreActiveScoringConfig(text) {
+    const weightedSkillKeywords = Object.keys(activeScoringConfig.skillWeights || {});
+    const weightedRiskKeywords = Object.keys(activeScoringConfig.riskWeights || {});
+    const weightedRoleKeywords = Object.keys(activeScoringConfig.roleWeights || {});
+    const positiveMatches = mergeUniqueArrays(
+      uniqueMatches(text, activeScoringConfig.supplementalPositiveKeywords || []),
+      uniqueMatches(text, weightedSkillKeywords)
+    );
+    const negativeMatches = mergeUniqueArrays(
+      uniqueMatches(text, activeScoringConfig.supplementalNegativeKeywords || []),
+      uniqueMatches(text, weightedRiskKeywords)
+    );
+    const roleMatches = mergeUniqueArrays(
+      uniqueMatches(text, activeScoringConfig.supplementalTargetRoles || []),
+      uniqueMatches(text, weightedRoleKeywords)
+    );
+    const hardRejectMatches = uniqueMatches(text, activeScoringConfig.supplementalHardRejectKeywords || []);
+
+    const skillScore = positiveMatches.reduce((sum, keyword) => {
+      if (Object.prototype.hasOwnProperty.call(activeScoringConfig.skillWeights, keyword)) {
+        return sum + activeScoringConfig.skillWeights[keyword];
+      }
+      return scoringConfigSource === 'backend' ? sum + 1 : sum;
+    }, 0);
+    const roleScore = roleMatches
+      .reduce((sum, keyword) => sum + (activeScoringConfig.roleWeights[keyword] || 0), 0);
+    const riskPenalty = negativeMatches.reduce((sum, keyword) => {
+      if (Object.prototype.hasOwnProperty.call(activeScoringConfig.riskWeights, keyword)) {
+        return sum + activeScoringConfig.riskWeights[keyword];
+      }
+      return 0;
+    }, 0);
+
+    return {
+      score: Math.max(-12, Math.min(18, Math.min(skillScore, 12) + Math.min(roleScore, 8) + Math.max(riskPenalty, -8))),
+      positiveMatches,
+      negativeMatches,
+      hardRejectMatches
+    };
   }
 
   function scoreJavaStack(text, matched) {
@@ -1328,8 +1526,10 @@
     const isJavaIntern = /(Java实习生|java实习生|Java开发实习|java开发实习|Java开发实习生|JAVA开发实习生|Java研发-实习|Java研发实习|产品研发-Java开发实习|实习-Java开发|后端开发实习生|后端研发实习生)/.test(titleText);
     const hasInternSignal = /(实习|实习生|见习|校招|应届|在校)/.test(titleText);
     const isDailyPay = jobInfo.salaryInfo && jobInfo.salaryInfo.type === 'daily';
-    const hardMismatch = /(3\s*-\s*5\s*年|2\s*-\s*5\s*年|5\s*-\s*10\s*年|实际软件开发经验)/.test(text)
-      || (jobInfo.salaryInfo && jobInfo.salaryInfo.type === 'monthly');
+    const hardMismatch = !hasInternSignal && (
+      /(3\s*-\s*5\s*年|2\s*-\s*5\s*年|5\s*-\s*10\s*年|实际软件开发经验)/.test(text)
+      || (jobInfo.salaryInfo && jobInfo.salaryInfo.type === 'monthly')
+    );
 
     if (!isJavaIntern || !hasInternSignal || !isDailyPay || hardMismatch) {
       return { floor: 0, label: '无' };
@@ -1457,12 +1657,19 @@
   function detectDirection(text) {
     const hasCompleteJavaBackendEarly = /Java/i.test(text) && /Spring\s*Boot|SpringBoot|SpringCloud|Spring Cloud|SpringMVC/i.test(text)
       && /MySQL/i.test(text) && /(Redis|MyBatis)/i.test(text);
+    const hasInternSignal = /(实习生|实习|校招|日常实习|应届|在校)/.test(text);
+    const aiBackendSignal = /(大模型|AI应用|LLM|Agent|RAG|Prompt|知识库)/i.test(text)
+      && /(Java|后端|服务端|接口|Docker|Go|Python|微服务)/i.test(text);
 
     if (/(C#|\.NET|SQLServer|Windows|PB)/.test(text) && !hasCompleteJavaBackendEarly) {
       return '.NET/C#/SQLServer非主线';
     }
 
-    if (/(3\s*-\s*5\s*年|2\s*-\s*5\s*年|5\s*-\s*10\s*年|社招)/.test(text) || /\d{1,3}(?:-\d{1,3})?K/.test(text)) {
+    if (aiBackendSignal) {
+      return /Java/i.test(text) ? 'Java后端 + AI应用' : 'AI应用后端 / Agent应用';
+    }
+
+    if (!hasInternSignal && (/(3\s*-\s*5\s*年|2\s*-\s*5\s*年|5\s*-\s*10\s*年|社招)/.test(text) || /\d{1,3}(?:-\d{1,3})?K/.test(text))) {
       return '社招不匹配';
     }
 
@@ -1621,6 +1828,7 @@
 
     jobInfo = normalizeJobInfo(jobInfo);
     const text = jobInfo.jdText;
+    const hasInternSignal = /(实习生|实习|校招|日常实习|应届|在校)/.test(text);
 
     const matchedKeywords = detectMatchedKeywords(text);
     const riskFlags = detectRiskFlags(text);
@@ -1639,8 +1847,8 @@
       const idx = riskFlags.indexOf('12个月');
       if (idx >= 0) riskFlags.splice(idx, 1);
     }
-    if (/(3\s*-\s*5\s*年|2\s*-\s*5\s*年|5\s*-\s*10\s*年)/.test(text)) riskFlags.push('社招经验要求');
-    if (jobInfo.salaryInfo && jobInfo.salaryInfo.type === 'monthly') riskFlags.push('月薪社招');
+    if (!hasInternSignal && /(3\s*-\s*5\s*年|2\s*-\s*5\s*年|5\s*-\s*10\s*年)/.test(text)) riskFlags.push('社招经验要求');
+    if (!hasInternSignal && jobInfo.salaryInfo && jobInfo.salaryInfo.type === 'monthly') riskFlags.push('月薪社招');
 
     const directionScore = scoreDirection(text);
     const javaScore = scoreJavaStack(text, matchedKeywords);
@@ -1649,8 +1857,9 @@
     const companyScore = scoreCompanyValue(text);
     const internScore = scoreInternCondition(jobInfo);
     const salaryScore = scoreSalary(Object.assign({}, jobInfo.salaryInfo, { city: jobInfo.city }));
-    const rawScore = directionScore + javaScore + aiScore + work.score + companyScore + internScore + salaryScore;
-    const devKeywordCount = matchedKeywords.java.length + matchedKeywords.ai.length + matchedKeywords.backend.length + work.high.length;
+    const configScore = scoreActiveScoringConfig(text);
+    const rawScore = directionScore + javaScore + aiScore + work.score + companyScore + internScore + salaryScore + configScore.score;
+    const devKeywordCount = matchedKeywords.java.length + matchedKeywords.ai.length + matchedKeywords.backend.length + matchedKeywords.profile.length + work.high.length;
     const fullstackTechFit = /全栈|软件开发|研发实习/.test(text) && devKeywordCount >= 3 && work.high.length >= 1;
     const nonTechHits = uniqueMatches(text, JOB_FIT_KEYWORDS.nonTechDirections);
     const direction = detectDirection(text);
@@ -1683,9 +1892,20 @@
       javaOnlyWeak: /Java/i.test(text) && !/(Spring|MySQL|Redis|接口开发|后端接口)/i.test(text),
       aiOpsOnly: /(AI工具使用|内容处理|知识库维护|文档整理)/.test(text) && !/(Agent|RAG|大模型API|后端接口|Python|Java)/i.test(text),
       hasStrongDev: devKeywordCount >= 3 || work.high.length >= 2,
-      socialRecruitMismatch: /(3\s*-\s*5\s*年|2\s*-\s*5\s*年|5\s*-\s*10\s*年|2\s*-\s*5年实际软件开发经验|实际软件开发经验)/.test(text)
+      socialRecruitMismatch: !hasInternSignal && (
+        /(3\s*-\s*5\s*年|2\s*-\s*5\s*年|5\s*-\s*10\s*年|2\s*-\s*5年实际软件开发经验|实际软件开发经验)/.test(text)
         || (jobInfo.salaryInfo && jobInfo.salaryInfo.type === 'monthly')
+      )
     };
+
+    if (configScore.hardRejectMatches.length) {
+      configScore.hardRejectMatches.forEach(flag => {
+        if (!riskFlags.includes(flag)) riskFlags.push(flag);
+      });
+      if (!context.hasStrongDev && !hasInternSignal) {
+        context.nonTechWithoutDev = true;
+      }
+    }
 
     if (context.socialRecruitMismatch) hardRule = '社招不匹配';
     if (context.longInternRisk) hardRule = scheduleRisk.hardRule;
@@ -1715,7 +1935,10 @@
         hardRule,
         scheduleRaw: scheduleRisk.scheduleText || '未识别',
         durationRaw: scheduleRisk.durationText || '未识别',
-        longInternRiskSource: scheduleRisk.source
+        longInternRiskSource: scheduleRisk.source,
+        scoringConfigSource,
+        scoringConfigStatusText,
+        configScore: configScore.score
       }
     };
 
@@ -2116,6 +2339,9 @@
         <div style="margin-bottom:8px;padding:6px 8px;border-radius:8px;background:#f9fafb;color:${sourceColor};font-size:12px;">
           ${escapeHtml(sourceMessage)}
         </div>
+        <div style="margin-bottom:8px;padding:6px 8px;border-radius:8px;background:${scoringConfigSource === 'backend' ? '#ecfdf5' : '#f9fafb'};color:${scoringConfigSource === 'backend' ? '#047857' : '#6b7280'};font-size:12px;">
+          评分配置：${escapeHtml(scoringConfigStatusText)}${scoringConfigLoaded ? '（已确认）' : ''}
+        </div>
         <div style="margin-bottom:6px;"><b>当前识别岗位：</b>${escapeHtml(result.companyPosition.position || '未识别')}</div>
         <div style="margin-bottom:6px;"><b>当前识别薪资：</b>${escapeHtml(result.jobInfo.salary || '未识别')}</div>
         <div style="margin-bottom:6px;"><b>当前识别城市：</b>${escapeHtml(result.city || '未识别')}</div>
@@ -2124,6 +2350,7 @@
         <div style="margin-bottom:6px;"><b>最终分数：</b>${escapeHtml(result.finalScore)}</div>
         <div style="margin-bottom:6px;"><b>保底规则：</b>${escapeHtml(result.ruleInfo.floorRule)}${result.ruleInfo.companyValue !== '无' ? ` / ${escapeHtml(result.ruleInfo.companyValue)}` : ''}</div>
         <div style="margin-bottom:6px;"><b>硬性规则：</b>${escapeHtml(result.ruleInfo.hardRule)}</div>
+        <div style="margin-bottom:6px;"><b>画像配置加权：</b>${escapeHtml(result.ruleInfo.configScore)}</div>
         <div style="margin:8px 0 4px;color:#6b7280;font-size:12px;"><b>scheduleRaw:</b> ${escapeHtml(result.ruleInfo.scheduleRaw)}</div>
         <div style="margin-bottom:4px;color:#6b7280;font-size:12px;"><b>durationRaw:</b> ${escapeHtml(result.ruleInfo.durationRaw)}</div>
         <div style="margin-bottom:6px;color:#6b7280;font-size:12px;"><b>longInternRiskSource:</b> ${escapeHtml(result.ruleInfo.longInternRiskSource)}</div>
@@ -2297,9 +2524,15 @@
 
   setTimeout(addButton, 2000);
   setInterval(addButton, 3000);
+  loadScoringConfigFromBackend().then(() => {
+    if (document.body) updateJobFitPanel();
+  });
   observeJobDetailChanges();
 
   window.JobFitScoring = {
+    loadScoringConfigFromBackend,
+    mergeScoringConfig,
+    scoreActiveScoringConfig,
     getVisibleJobText,
     findJobDetailContainer,
     findJobHeaderBlock,
