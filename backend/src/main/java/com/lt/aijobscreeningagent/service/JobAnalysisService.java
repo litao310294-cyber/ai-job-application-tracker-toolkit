@@ -17,18 +17,27 @@ public class JobAnalysisService {
   private final LlmProperties llmProperties;
   private final LlmClient llmClient;
   private final JobRecordRepository jobRecordRepository;
+  private final JobAnalysisCacheService jobAnalysisCacheService;
 
   public JobAnalysisService(
       LlmProperties llmProperties,
       LlmClient llmClient,
-      JobRecordRepository jobRecordRepository
+      JobRecordRepository jobRecordRepository,
+      JobAnalysisCacheService jobAnalysisCacheService
   ) {
     this.llmProperties = llmProperties;
     this.llmClient = llmClient;
     this.jobRecordRepository = jobRecordRepository;
+    this.jobAnalysisCacheService = jobAnalysisCacheService;
   }
 
   public JobAnalyzeResponse analyze(JobAnalyzeRequest request) {
+    String cacheKey = jobAnalysisCacheService.buildCacheKey(request);
+    var cachedResponse = jobAnalysisCacheService.get(cacheKey);
+    if (cachedResponse.isPresent()) {
+      return cachedResponse.get();
+    }
+
     String taskId = UUID.randomUUID().toString();
     long jobRecordId = jobRecordRepository.saveJobRecord(request);
     JobAnalyzeResponse response;
@@ -36,6 +45,7 @@ public class JobAnalysisService {
     if (!llmProperties.isEnabled() || !llmProperties.hasApiKey()) {
       response = fallbackAnalyze(taskId, request);
       jobRecordRepository.saveJobAnalysis(jobRecordId, response);
+      jobAnalysisCacheService.put(cacheKey, response);
       return response;
     }
 
@@ -58,6 +68,7 @@ public class JobAnalysisService {
     }
 
     jobRecordRepository.saveJobAnalysis(jobRecordId, response);
+    jobAnalysisCacheService.put(cacheKey, response);
     return response;
   }
 
