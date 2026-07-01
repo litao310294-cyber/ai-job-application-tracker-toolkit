@@ -75,3 +75,31 @@ create table if not exists user_scoring_config (
   updated_at datetime not null default current_timestamp on update current_timestamp,
   unique key uk_user_scoring_config_profile_name (profile_name)
 );
+
+create table if not exists user_profile_document (
+  id bigint primary key auto_increment,
+  profile_name varchar(100) not null default 'default',
+  doc_type varchar(50) not null default 'manual_profile',
+  doc_name varchar(255),
+  source_type varchar(50) not null default 'manual_input',
+  raw_text mediumtext,
+  content_hash varchar(128),
+  created_at datetime not null default current_timestamp,
+  updated_at datetime not null default current_timestamp on update current_timestamp,
+  index idx_user_profile_document_profile_name (profile_name)
+);
+
+create table if not exists user_profile_chunk (
+  id bigint primary key auto_increment,
+  profile_name varchar(100) not null default 'default',
+  document_id bigint not null,
+  chunk_index int not null,
+  title varchar(255),
+  content text not null,
+  source_type varchar(50) not null default 'manual_profile',
+  content_hash varchar(128),
+  score_hint int default 0,
+  created_at datetime not null default current_timestamp,
+  index idx_user_profile_chunk_profile_name (profile_name),
+  index idx_user_profile_chunk_document_id (document_id)
+);

@@ -45,7 +45,7 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
           .timeout(Duration.ofSeconds(Math.max(1, properties.getTimeoutSeconds())))
           .header("Authorization", "Bearer " + properties.getApiKey())
           .header("Content-Type", "application/json")
-          .POST(HttpRequest.BodyPublishers.ofString(buildRequestBody(request)))
+          .POST(HttpRequest.BodyPublishers.ofString(buildRequestBody(systemPrompt(), userPrompt(request), 1200)))
           .build();
 
       HttpResponse<String> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
@@ -65,6 +65,35 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
     }
   }
 
+  @Override
+  public String generateJson(String systemPrompt, String userPrompt, int maxTokens) {
+    if (!properties.isEnabled() || !properties.hasApiKey()) {
+      throw new IllegalStateException("LLM is disabled or API key is empty");
+    }
+
+    try {
+      HttpRequest httpRequest = HttpRequest.newBuilder()
+          .uri(URI.create(chatCompletionsUrl()))
+          .timeout(Duration.ofSeconds(Math.max(1, properties.getTimeoutSeconds())))
+          .header("Authorization", "Bearer " + properties.getApiKey())
+          .header("Content-Type", "application/json")
+          .POST(HttpRequest.BodyPublishers.ofString(buildRequestBody(systemPrompt, userPrompt, maxTokens)))
+          .build();
+
+      HttpResponse<String> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
+      if (response.statusCode() < 200 || response.statusCode() >= 300) {
+        throw new IllegalStateException("LLM API returned HTTP " + response.statusCode());
+      }
+
+      return cleanJsonContent(extractContent(response.body()));
+    } catch (IOException e) {
+      throw new IllegalStateException("LLM response parse failed", e);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new IllegalStateException("LLM request interrupted", e);
+    }
+  }
+
   private String chatCompletionsUrl() {
     String baseUrl = properties.getBaseUrl();
     if (baseUrl.endsWith("/")) {
@@ -73,14 +102,14 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
     return baseUrl + "/chat/completions";
   }
 
-  private String buildRequestBody(JobAnalyzeRequest request) throws JsonProcessingException {
+  private String buildRequestBody(String systemPrompt, String userPrompt, int maxTokens) throws JsonProcessingException {
     Map<String, Object> body = Map.of(
         "model", properties.getModel(),
         "temperature", 0.2,
-        "max_tokens", 1200,
+        "max_tokens", maxTokens,
         "messages", List.of(
-            Map.of("role", "system", "content", systemPrompt()),
-            Map.of("role", "user", "content", userPrompt(request))
+            Map.of("role", "system", "content", systemPrompt),
+            Map.of("role", "user", "content", userPrompt)
         )
     );
     return objectMapper.writeValueAsString(body);
