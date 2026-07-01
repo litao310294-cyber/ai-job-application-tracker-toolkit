@@ -1,6 +1,11 @@
 spring:
   application:
     name: ai-job-screening-agent-backend
+  datasource:
+    url: ${MYSQL_URL:jdbc:mysql://localhost:3306/ai_job_agent?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false}
+    username: ${MYSQL_USERNAME:root}
+    password: ${MYSQL_PASSWORD:}
+    driver-class-name: com.mysql.cj.jdbc.Driver
 
 server:
   port: 8080

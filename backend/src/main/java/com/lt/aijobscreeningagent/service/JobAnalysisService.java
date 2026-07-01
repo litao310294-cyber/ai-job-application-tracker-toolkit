@@ -3,8 +3,10 @@ package com.lt.aijobscreeningagent.service;
 import com.lt.aijobscreeningagent.config.LlmProperties;
 import com.lt.aijobscreeningagent.dto.JobAnalyzeRequest;
 import com.lt.aijobscreeningagent.dto.JobAnalyzeResponse;
+import com.lt.aijobscreeningagent.dto.JobRecordSummary;
 import com.lt.aijobscreeningagent.dto.LlmAnalyzeResult;
 import com.lt.aijobscreeningagent.llm.LlmClient;
+import com.lt.aijobscreeningagent.repository.JobRecordRepository;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
@@ -14,22 +16,32 @@ public class JobAnalysisService {
 
   private final LlmProperties llmProperties;
   private final LlmClient llmClient;
+  private final JobRecordRepository jobRecordRepository;
 
-  public JobAnalysisService(LlmProperties llmProperties, LlmClient llmClient) {
+  public JobAnalysisService(
+      LlmProperties llmProperties,
+      LlmClient llmClient,
+      JobRecordRepository jobRecordRepository
+  ) {
     this.llmProperties = llmProperties;
     this.llmClient = llmClient;
+    this.jobRecordRepository = jobRecordRepository;
   }
 
   public JobAnalyzeResponse analyze(JobAnalyzeRequest request) {
     String taskId = UUID.randomUUID().toString();
+    long jobRecordId = jobRecordRepository.saveJobRecord(request);
+    JobAnalyzeResponse response;
 
     if (!llmProperties.isEnabled() || !llmProperties.hasApiKey()) {
-      return fallbackAnalyze(taskId, request);
+      response = fallbackAnalyze(taskId, request);
+      jobRecordRepository.saveJobAnalysis(jobRecordId, response);
+      return response;
     }
 
     try {
       LlmAnalyzeResult result = llmClient.analyze(request);
-      return new JobAnalyzeResponse(
+      response = new JobAnalyzeResponse(
           taskId,
           "success",
           result.decision(),
@@ -42,8 +54,15 @@ public class JobAnalysisService {
           result.suggestedMessage()
       );
     } catch (RuntimeException e) {
-      return fallbackAnalyze(taskId, request);
+      response = fallbackAnalyze(taskId, request);
     }
+
+    jobRecordRepository.saveJobAnalysis(jobRecordId, response);
+    return response;
+  }
+
+  public List<JobRecordSummary> findRecentRecords(Integer limit) {
+    return jobRecordRepository.findRecentRecords(limit);
   }
 
   private JobAnalyzeResponse fallbackAnalyze(String taskId, JobAnalyzeRequest request) {
