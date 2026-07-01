@@ -6,6 +6,9 @@
 // @match        https://www.zhipin.com/*
 // @run-at       document-end
 // @grant        GM_setClipboard
+// @grant        GM_xmlhttpRequest
+// @connect      localhost
+// @connect      127.0.0.1
 // ==/UserScript==
 
 (function () {
@@ -631,6 +634,10 @@
   };
 
   let jobFitLastResult = null;
+  let jobFitLastKey = '';
+  let jobFitAiResult = null;
+  let jobFitAiError = '';
+  let jobFitAiLoading = false;
   let jobFitTimer = null;
   let jobFitCollapsed = false;
 
@@ -1426,6 +1433,120 @@
     ].join('\n');
   }
 
+  function getJobFitResultKey(result) {
+    return [
+      result.companyPosition.company,
+      result.companyPosition.position,
+      result.jobInfo.salary,
+      result.city,
+      result.jobInfo.schedule,
+      result.jobInfo.duration
+    ].filter(Boolean).join('|');
+  }
+
+  function buildAiAnalyzePayload(jobInfo, scoreResult) {
+    return {
+      jobTitle: scoreResult.companyPosition.position || jobInfo.jobTitle || '',
+      companyName: scoreResult.companyPosition.company || jobInfo.companyName || '',
+      salary: jobInfo.salary || '',
+      city: scoreResult.city || jobInfo.city || '',
+      schedule: jobInfo.schedule || '',
+      duration: jobInfo.duration || '',
+      jobText: jobInfo.jdText || '',
+      ruleScore: scoreResult.finalScore,
+      ruleConclusion: scoreResult.conclusion
+    };
+  }
+
+  function callAiAnalyzeBackend(payload) {
+    return new Promise((resolve, reject) => {
+      if (typeof GM_xmlhttpRequest !== 'function') {
+        reject(new Error('GM_xmlhttpRequest unavailable'));
+        return;
+      }
+
+      GM_xmlhttpRequest({
+        method: 'POST',
+        url: 'http://localhost:8080/api/job/analyze',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        data: JSON.stringify(payload),
+        timeout: 15000,
+        onload: response => {
+          if (response.status < 200 || response.status >= 300) {
+            reject(new Error(`HTTP ${response.status}`));
+            return;
+          }
+
+          try {
+            resolve(JSON.parse(response.responseText || '{}'));
+          } catch (e) {
+            reject(new Error('Invalid JSON response'));
+          }
+        },
+        onerror: () => reject(new Error('Request failed')),
+        ontimeout: () => reject(new Error('Request timeout'))
+      });
+    });
+  }
+
+  function renderCompactList(items, emptyText) {
+    const list = Array.isArray(items) ? items.filter(Boolean) : [];
+    if (!list.length) return `<div style="color:#6b7280;">${escapeHtml(emptyText)}</div>`;
+
+    return `<ul style="margin:4px 0 0 18px;padding:0;">${list.slice(0, 4).map(item =>
+      `<li style="margin-bottom:3px;">${escapeHtml(item)}</li>`
+    ).join('')}</ul>`;
+  }
+
+  function renderAiAnalyzeResult(result, error, loading) {
+    if (loading) {
+      return `
+        <div style="margin-top:8px;padding:8px;border-radius:8px;background:#f9fafb;border:1px solid #e5e7eb;color:#6b7280;">
+          正在调用本地后端进行 AI 深度核验...
+        </div>
+      `;
+    }
+
+    if (error) {
+      return `
+        <div style="margin-top:8px;padding:8px;border-radius:8px;background:#fff7ed;border:1px solid #fed7aa;color:#c2410c;">
+          ${escapeHtml(error)}
+        </div>
+      `;
+    }
+
+    if (!result) {
+      return `
+        <div style="margin-top:8px;color:#6b7280;font-size:12px;">
+          AI 深度核验仅在手动点击按钮后调用本地后端。
+        </div>
+      `;
+    }
+
+    return `
+      <details open style="margin-top:8px;padding:8px;border-radius:8px;background:#f9fafb;border:1px solid #e5e7eb;">
+        <summary style="cursor:pointer;font-weight:700;">AI 深度核验结果</summary>
+        <div style="margin-top:8px;">
+          <div style="margin-bottom:4px;"><b>AI 决策：</b>${escapeHtml(result.decision || '未返回')}</div>
+          <div style="margin-bottom:4px;"><b>AI 分数：</b>${escapeHtml(result.score == null ? '未返回' : result.score)}</div>
+          <div style="margin-bottom:4px;"><b>方向：</b>${escapeHtml(result.direction || '未返回')}</div>
+          <div style="margin:8px 0 4px;"><b>Reasons</b></div>
+          ${renderCompactList(result.reasons, '暂无')}
+          <div style="margin:8px 0 4px;"><b>Risks</b></div>
+          ${renderCompactList(result.risks, '暂无')}
+          <div style="margin:8px 0 4px;"><b>Resume Matches</b></div>
+          ${renderCompactList(result.resumeMatches, '暂无')}
+          <div style="margin:8px 0 4px;"><b>Interview Focus</b></div>
+          ${renderCompactList(result.interviewFocus, '暂无')}
+          <div style="margin:8px 0 4px;"><b>Suggested Message</b></div>
+          <div style="color:#374151;">${escapeHtml(result.suggestedMessage || '暂无')}</div>
+        </div>
+      </details>
+    `;
+  }
+
   function copyText(text) {
     try {
       GM_setClipboard(text);
@@ -1451,6 +1572,13 @@
   }
 
   function renderJobFitPanel(result) {
+    const resultKey = getJobFitResultKey(result);
+    if (resultKey !== jobFitLastKey) {
+      jobFitAiResult = null;
+      jobFitAiError = '';
+      jobFitAiLoading = false;
+      jobFitLastKey = resultKey;
+    }
     jobFitLastResult = result;
 
     let panel = document.getElementById('job-fit-scoring-panel');
@@ -1516,7 +1644,9 @@
         <div>${renderTagList(result.riskFlags, '暂无明显风险点')}</div>
         <div style="margin:10px 0 8px;"><b>简短理由：</b>${escapeHtml(result.reason)}</div>
         <button id="job-fit-copy" style="width:100%;border:none;background:${color};color:#fff;border-radius:8px;padding:8px 10px;cursor:pointer;font-weight:700;">复制岗位分析</button>
+        <button id="job-fit-ai-analyze" ${jobFitAiLoading ? 'disabled' : ''} style="width:100%;margin-top:8px;border:none;background:#111827;color:#fff;border-radius:8px;padding:8px 10px;cursor:${jobFitAiLoading ? 'not-allowed' : 'pointer'};font-weight:700;opacity:${jobFitAiLoading ? '.65' : '1'};">${jobFitAiLoading ? '分析中...' : 'AI 深度核验'}</button>
         <div id="job-fit-copy-tip" style="margin-top:6px;color:#6b7280;font-size:12px;"></div>
+        <div id="job-fit-ai-result">${renderAiAnalyzeResult(jobFitAiResult, jobFitAiError, jobFitAiLoading)}</div>
         <div style="margin-top:10px;color:#6b7280;font-size:12px;border-top:1px solid #e5e7eb;padding-top:8px;">
           仅分析当前页面可见文本，不自动投递，不自动发消息
         </div>
@@ -1534,6 +1664,28 @@
         const ok = copyText(buildJobAnalysisText(jobFitLastResult));
         const tip = document.getElementById('job-fit-copy-tip');
         if (tip) tip.textContent = ok ? '已复制到剪贴板。' : '复制失败，请手动复制。';
+      };
+    }
+
+    const aiBtn = document.getElementById('job-fit-ai-analyze');
+    if (aiBtn) {
+      aiBtn.onclick = async () => {
+        if (jobFitAiLoading || !jobFitLastResult) return;
+
+        jobFitAiLoading = true;
+        jobFitAiError = '';
+        jobFitAiResult = null;
+        renderJobFitPanel(jobFitLastResult);
+
+        try {
+          const payload = buildAiAnalyzePayload(jobFitLastResult.jobInfo, jobFitLastResult);
+          jobFitAiResult = await callAiAnalyzeBackend(payload);
+        } catch (e) {
+          jobFitAiError = '后端未启动或接口调用失败。请确认 backend 服务已在 http://localhost:8080 启动。';
+        } finally {
+          jobFitAiLoading = false;
+          renderJobFitPanel(jobFitLastResult);
+        }
       };
     }
   }
@@ -1616,6 +1768,9 @@
     detectMatchedKeywords,
     getConclusion,
     getGreetingType,
+    buildAiAnalyzePayload,
+    callAiAnalyzeBackend,
+    renderAiAnalyzeResult,
     renderJobFitPanel,
     observeJobDetailChanges
   };
