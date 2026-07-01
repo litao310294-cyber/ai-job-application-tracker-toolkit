@@ -47,3 +47,20 @@ create table if not exists job_feedback (
   index idx_job_feedback_record_id (job_record_id),
   index idx_job_feedback_created_at (created_at)
 );
+
+create table if not exists user_profile (
+  id bigint primary key auto_increment,
+  profile_name varchar(100) not null default 'default',
+  target_roles text,
+  preferred_cities text,
+  skills text,
+  projects text,
+  positive_keywords text,
+  negative_keywords text,
+  hard_reject_keywords text,
+  schedule_preference text,
+  manual_text mediumtext,
+  created_at datetime not null default current_timestamp,
+  updated_at datetime not null default current_timestamp on update current_timestamp,
+  unique key uk_user_profile_name (profile_name)
+);
