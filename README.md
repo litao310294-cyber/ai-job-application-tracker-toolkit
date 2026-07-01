@@ -41,6 +41,8 @@ This project helps with:
   带下拉框、公式、条件格式和仪表盘的求职跟进 Excel 模板
 - Visible chat status export userscript for TSV output  
   将页面已展示的聊天状态整理为 TSV 的用户脚本
+- Real-time job fit scoring based on visible page text and local rules  
+  基于页面可见文本和本地规则的岗位匹配度实时评分
 - AI prompts for job screening, chat analysis, tracker updates, daily review, interview review, and HR replies  
   覆盖岗位筛选、聊天分析、表格更新、每日复盘、面试复盘和 HR 回复的 AI 提示词
 - Mock examples for public GitHub demonstration  
@@ -87,12 +89,37 @@ The userscript only reads text already displayed on the current browser page and
    在 `Applications` 表中填写投递记录。
 3. Install `userscripts/job-chat-status-export.user.js` in Tampermonkey.  
    在 Tampermonkey 中安装 `userscripts/job-chat-status-export.user.js`。
-4. Export visible chat status into TSV.  
+4. Review the floating job fit scoring panel on job search or detail pages.  
+   在职位搜索页或岗位详情页查看浮动的岗位匹配度评分面板。
+5. Export visible chat status into TSV.  
    将页面已展示的聊天状态导出为 TSV。
-5. Paste TSV into an AI tool with `prompts/chat_status_analysis_prompt.md`.  
+6. Paste TSV into an AI tool with `prompts/chat_status_analysis_prompt.md`.  
    使用 `prompts/chat_status_analysis_prompt.md` 让 AI 分析 TSV。
-6. Update the tracker and review the dashboard.  
+7. Update the tracker and review the dashboard.  
    更新表格并查看仪表盘统计。
+
+## Job Fit Scoring / 岗位匹配度实时评分
+
+The userscript includes a local rule-based `Job Fit Scoring` panel. It reads visible text from the current browser page, scores the job from 0 to 100, and shows a suggested conclusion such as `优先投`, `可投`, `谨慎投`, or `不投`.
+
+用户脚本包含一个本地规则驱动的「岗位匹配度实时评分」面板。它只读取当前浏览器页面上已经展示出来的岗位文本，并根据关键词规则给出 0-100 分、方向判断、Excel 档位、命中关键词、风险点和推荐开场白版本。
+
+Important boundary:
+
+边界说明：
+
+- It is based only on visible page text and local rules.  
+  本功能仅基于当前页面可见文本进行本地规则评分。
+- It does not access non-public platform APIs.  
+  不访问非公开接口。
+- It does not bypass verification.  
+  不绕过验证码。
+- It does not perform job application actions.  
+  不自动投递。
+- It does not perform message sending actions.  
+  不自动发送消息。
+- The score is only a reference; the final decision is made by the user.  
+  评分不保证完全准确，最终是否投递由用户人工决定。
 
 ## Directory Structure / 目录结构
 
