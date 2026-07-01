@@ -1,0 +1,66 @@
+package com.lt.aijobscreeningagent.service;
+
+import com.lt.aijobscreeningagent.dto.JobAnalyzeRequest;
+import com.lt.aijobscreeningagent.dto.JobAnalyzeResponse;
+import java.util.List;
+import java.util.UUID;
+import org.springframework.stereotype.Service;
+
+@Service
+public class JobAnalysisService {
+
+  public JobAnalyzeResponse analyze(JobAnalyzeRequest request) {
+    int score = request.ruleScore() != null ? request.ruleScore() : 72;
+    String decision = request.ruleConclusion() != null && !request.ruleConclusion().isBlank()
+        ? request.ruleConclusion()
+        : "可投";
+    String direction = detectMockDirection(request);
+
+    return new JobAnalyzeResponse(
+        UUID.randomUUID().toString(),
+        "mocked",
+        decision,
+        score,
+        direction,
+        List.of(
+            "当前版本为 mock 分析结果，尚未调用大模型。",
+            "岗位文本中包含后端或 AI 应用相关信息，可先加入人工复核列表。",
+            "建议结合 Excel 跟进表中的投递状态、沟通状态和面试记录继续判断。"
+        ),
+        List.of(
+            "请人工确认出勤周期、实习时长和岗位方向是否与个人计划匹配。",
+            "如果 JD 描述较短，评分结果只作为初筛参考。"
+        ),
+        List.of(
+            "Java/Spring/MySQL/Redis 或 AI 应用项目经历",
+            "接口开发、问题排查、业务理解与沟通能力",
+            "可结合个人项目经历补充岗位相关证据"
+        ),
+        List.of(
+            "介绍一个与岗位技术栈相关的后端或 AI 应用项目",
+            "说明接口设计、数据库设计或服务联调中的具体工作",
+            "准备回答为什么选择该岗位方向"
+        ),
+        "您好，我对这个岗位比较感兴趣，也有相关后端开发/AI 应用项目经历，想进一步了解岗位的具体工作内容和实习安排。"
+    );
+  }
+
+  private String detectMockDirection(JobAnalyzeRequest request) {
+    String text = String.join(" ",
+        valueOrEmpty(request.jobTitle()),
+        valueOrEmpty(request.jobText())
+    );
+
+    if (text.matches("(?i).*?(AI|Agent|RAG|大模型|智能体).*")) {
+      return "AI应用后端";
+    }
+    if (text.matches("(?i).*?(Java|Spring|MySQL|Redis|后端).*")) {
+      return "Java后端";
+    }
+    return "待人工确认";
+  }
+
+  private String valueOrEmpty(String value) {
+    return value == null ? "" : value;
+  }
+}
