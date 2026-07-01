@@ -64,3 +64,14 @@ create table if not exists user_profile (
   updated_at datetime not null default current_timestamp on update current_timestamp,
   unique key uk_user_profile_name (profile_name)
 );
+
+create table if not exists user_scoring_config (
+  id bigint primary key auto_increment,
+  profile_name varchar(100) not null default 'default',
+  config_json mediumtext not null,
+  generated_by varchar(50) not null default 'ai',
+  confirmed tinyint not null default 0,
+  created_at datetime not null default current_timestamp,
+  updated_at datetime not null default current_timestamp on update current_timestamp,
+  unique key uk_user_scoring_config_profile_name (profile_name)
+);
