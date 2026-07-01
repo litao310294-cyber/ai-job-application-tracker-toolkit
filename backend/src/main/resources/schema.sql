@@ -33,3 +33,17 @@ create table if not exists job_analysis (
     foreign key (job_record_id) references job_record (id)
     on delete cascade
 );
+
+create table if not exists job_feedback (
+  id bigint primary key auto_increment,
+  job_record_id bigint not null,
+  apply_status varchar(50),
+  chat_status varchar(50),
+  interview_status varchar(50),
+  feedback_note text,
+  reject_reason varchar(255),
+  created_at datetime not null default current_timestamp,
+  updated_at datetime not null default current_timestamp on update current_timestamp,
+  index idx_job_feedback_record_id (job_record_id),
+  index idx_job_feedback_created_at (created_at)
+);

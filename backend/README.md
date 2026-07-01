@@ -254,6 +254,52 @@ If there is no data, the response is:
 []
 ```
 
+### POST /api/job/feedback
+
+Save user follow-up feedback for a job record:
+
+保存某条岗位记录的后续投递反馈：
+
+```bash
+curl -X POST http://localhost:8080/api/job/feedback \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jobRecordId": 2,
+    "applyStatus": "已投递",
+    "chatStatus": "已沟通",
+    "interviewStatus": "未约面",
+    "feedbackNote": "岗位方向匹配，准备继续跟进。",
+    "rejectReason": ""
+  }'
+```
+
+Expected response:
+
+响应示例：
+
+```json
+{
+  "id": 1,
+  "jobRecordId": 2,
+  "applyStatus": "已投递",
+  "chatStatus": "已沟通",
+  "interviewStatus": "未约面",
+  "feedbackNote": "岗位方向匹配，准备继续跟进。",
+  "rejectReason": "",
+  "createdAt": "2026-07-01T12:00:00"
+}
+```
+
+### GET /api/job/feedback
+
+Query feedback for a job record:
+
+查询某条岗位记录的反馈：
+
+```bash
+curl "http://localhost:8080/api/job/feedback?jobRecordId=2"
+```
+
 ## Apifox Test / 使用 Apifox 测试
 
 1. Start the backend with `mvn spring-boot:run`.
@@ -320,6 +366,38 @@ docker exec -it redis-vector redis-cli keys "ai-job-agent:analysis:*"
 5. 检查 MySQL：第二次相同请求不应让 `job_record` 和 `job_analysis` 增加重复记录。
 6. 使用上面的 `redis-cli keys` 命令查看缓存 key。
 
+To test feedback:
+
+测试反馈闭环：
+
+1. Call `GET /api/job/records?limit=20` and copy one `jobRecordId`.
+2. Create a `POST` request in Apifox.
+3. URL: `http://localhost:8080/api/job/feedback`
+4. Header: `Content-Type: application/json`
+5. Body:
+
+```json
+{
+  "jobRecordId": 2,
+  "applyStatus": "已投递",
+  "chatStatus": "已沟通",
+  "interviewStatus": "未约面",
+  "feedbackNote": "岗位方向匹配，准备继续跟进。",
+  "rejectReason": ""
+}
+```
+
+6. Query feedback with `GET http://localhost:8080/api/job/feedback?jobRecordId=2`.
+
+步骤：
+
+1. 调用 `GET /api/job/records?limit=20`，复制一个 `jobRecordId`。
+2. 在 Apifox 新建 `POST` 请求。
+3. URL 填 `http://localhost:8080/api/job/feedback`。
+4. Header 设置 `Content-Type: application/json`。
+5. 填入上面的 JSON Body。
+6. 再调用 `GET http://localhost:8080/api/job/feedback?jobRecordId=2` 查询反馈列表。
+
 ## DataGrip Check / 使用 DataGrip 验证
 
 After calling `/api/job/analyze`, run:
@@ -329,6 +407,7 @@ After calling `/api/job/analyze`, run:
 ```sql
 select * from job_record order by id desc limit 20;
 select * from job_analysis order by id desc limit 20;
+select * from job_feedback order by id desc limit 20;
 ```
 
 Expected result:
@@ -338,10 +417,12 @@ Expected result:
 - `job_record` has one new row for the request.
 - `job_analysis` has one new row linked by `job_record_id`.
 - `job_analysis.status` is `success` when LLM succeeds, otherwise `fallback`.
+- `job_feedback` has one new row after calling `POST /api/job/feedback`.
 
 - `job_record` 会新增 1 条岗位记录。
 - `job_analysis` 会新增 1 条分析记录，并通过 `job_record_id` 关联。
 - LLM 成功时 `job_analysis.status` 为 `success`，否则为 `fallback`。
+- 调用 `POST /api/job/feedback` 后，`job_feedback` 会新增 1 条反馈记录。
 
 ## Notes / 说明
 
