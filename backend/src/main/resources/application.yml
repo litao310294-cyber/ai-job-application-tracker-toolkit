@@ -4,3 +4,11 @@ spring:
 
 server:
   port: 8080
+
+llm:
+  provider: deepseek
+  base-url: https://api.deepseek.com
+  api-key: ${DEEPSEEK_API_KEY:}
+  model: deepseek-chat
+  timeout-seconds: 30
+  enabled: true

@@ -1,7 +1,10 @@
 package com.lt.aijobscreeningagent.service;
 
+import com.lt.aijobscreeningagent.config.LlmProperties;
 import com.lt.aijobscreeningagent.dto.JobAnalyzeRequest;
 import com.lt.aijobscreeningagent.dto.JobAnalyzeResponse;
+import com.lt.aijobscreeningagent.dto.LlmAnalyzeResult;
+import com.lt.aijobscreeningagent.llm.LlmClient;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
@@ -9,7 +12,41 @@ import org.springframework.stereotype.Service;
 @Service
 public class JobAnalysisService {
 
+  private final LlmProperties llmProperties;
+  private final LlmClient llmClient;
+
+  public JobAnalysisService(LlmProperties llmProperties, LlmClient llmClient) {
+    this.llmProperties = llmProperties;
+    this.llmClient = llmClient;
+  }
+
   public JobAnalyzeResponse analyze(JobAnalyzeRequest request) {
+    String taskId = UUID.randomUUID().toString();
+
+    if (!llmProperties.isEnabled() || !llmProperties.hasApiKey()) {
+      return fallbackAnalyze(taskId, request);
+    }
+
+    try {
+      LlmAnalyzeResult result = llmClient.analyze(request);
+      return new JobAnalyzeResponse(
+          taskId,
+          "success",
+          result.decision(),
+          result.score(),
+          result.direction(),
+          result.reasons(),
+          result.risks(),
+          result.resumeMatches(),
+          result.interviewFocus(),
+          result.suggestedMessage()
+      );
+    } catch (RuntimeException e) {
+      return fallbackAnalyze(taskId, request);
+    }
+  }
+
+  private JobAnalyzeResponse fallbackAnalyze(String taskId, JobAnalyzeRequest request) {
     int score = request.ruleScore() != null ? request.ruleScore() : 72;
     String decision = request.ruleConclusion() != null && !request.ruleConclusion().isBlank()
         ? request.ruleConclusion()
@@ -17,13 +54,13 @@ public class JobAnalysisService {
     String direction = detectMockDirection(request);
 
     return new JobAnalyzeResponse(
-        UUID.randomUUID().toString(),
-        "mocked",
+        taskId,
+        "fallback",
         decision,
         score,
         direction,
         List.of(
-            "当前版本为 mock 分析结果，尚未调用大模型。",
+            "当前结果为 fallback 分析：LLM 未启用、未配置 key、调用失败或返回内容解析失败。",
             "岗位文本中包含后端或 AI 应用相关信息，可先加入人工复核列表。",
             "建议结合 Excel 跟进表中的投递状态、沟通状态和面试记录继续判断。"
         ),
