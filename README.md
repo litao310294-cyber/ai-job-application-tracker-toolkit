@@ -98,28 +98,83 @@ The userscript only reads text already displayed on the current browser page and
 7. Update the tracker and review the dashboard.  
    更新表格并查看仪表盘统计。
 
-## Job Fit Scoring / 岗位匹配度实时评分
+## Experimental: Job Fit Scoring Panel / 实验功能：岗位匹配度评分面板
 
-The userscript includes a local rule-based `Job Fit Scoring` panel. It reads visible text from the current browser page, scores the job from 0 to 100, and shows a suggested conclusion such as `优先投`, `可投`, `谨慎投`, or `不投`.
+The `feature/job-fit-scoring` branch adds an experimental local rule-based `Job Fit Scoring` panel. On BOSS job search or job detail pages, it shows a floating panel at the bottom right to help judge whether the current job may fit Java backend, AI application backend, or Agent-related internship directions.
 
-用户脚本包含一个本地规则驱动的「岗位匹配度实时评分」面板。它只读取当前浏览器页面上已经展示出来的岗位文本，并根据关键词规则给出 0-100 分、方向判断、Excel 档位、命中关键词、风险点和推荐开场白版本。
+`feature/job-fit-scoring` 分支新增了一个实验性质的「岗位匹配度实时评分」面板。在 BOSS 直聘职位搜索页或岗位详情页，它会在右下角显示一个浮动面板，辅助判断当前岗位是否适合 Java 后端、AI 应用后端或 Agent 相关实习方向。
+
+What it can do:
+
+当前功能包括：
+
+- Read the current right-side job detail panel in real time.  
+  实时读取当前右侧岗位详情。
+- Identify job title, salary, city, experience, education, schedule, and duration.  
+  识别岗位标题、薪资、城市、经验、学历、出勤周期。
+- Detect directions such as Java backend, AI application backend, client-side development, `.NET/C#`, GIS/remote sensing, or social-recruitment mismatch.  
+  判断岗位方向：Java 后端、AI 应用后端、客户端、`.NET/C#`、GIS/遥感、社招不匹配等。
+- Score locally with keyword rules for Java/Spring/MySQL/Redis/MyBatis, AI/Agent/RAG, and large-model API related terms.  
+  根据 Java/Spring/MySQL/Redis/MyBatis、AI/Agent/RAG、大模型接口等关键词进行本地规则评分。
+- Show a conclusion: `优先投`, `可投`, `谨慎投`, or `不投`.  
+  显示结论：`优先投` / `可投` / `谨慎投` / `不投`。
+- Show an Excel tier: `A档-高匹配`, `B档-可投`, `C档-练手`, or `暂不投`.  
+  显示 Excel 档位：`A档-高匹配` / `B档-可投` / `C档-练手` / `暂不投`。
+- Show risk flags such as `7天/周`, `12个月`, social-recruitment experience requirements, and non-mainline directions.  
+  显示风险点：`7天/周`、`12个月`、社招经验、非主线方向等。
+- Copy the job analysis result for manual review or Excel notes.  
+  支持复制岗位分析结果，方便人工复核或写入 Excel 备注。
+
+Suitable use cases:
+
+适用场景：
+
+- First-pass screening for Java backend internship roles.  
+  Java 后端实习岗位初筛。
+- First-pass screening for AI application development, large-model application, Agent, or RAG roles.  
+  AI 应用开发、大模型应用、Agent、RAG 岗位初筛。
+- Distinguishing Java backend mainline roles from client-side, GIS, `.NET`, testing, delivery, or other less relevant directions.  
+  区分 Java 后端主线岗位和客户端、GIS、`.NET`、测试、实施等非主线岗位。
+- Helping decide how to fill the Excel tracker status and priority fields.  
+  辅助投递记录 Excel 的状态和优先级判断。
+
+Limitations:
+
+使用限制：
+
+- The score is only a local rule-based reference, not a judgment of the real quality of the job.  
+  评分只是本地规则辅助，不代表岗位真实质量。
+- Big-company non-mainline roles, AI application roles, and short job descriptions still need manual judgment.  
+  大厂非主线岗位、AI 应用岗位、JD 很简略的岗位仍需要人工判断。
+- The final decision to apply or not apply is always made by the user.  
+  最终是否投递需要用户自己确认。
 
 Important boundary:
 
 边界说明：
 
-- It is based only on visible page text and local rules.  
-  本功能仅基于当前页面可见文本进行本地规则评分。
-- It does not access non-public platform APIs.  
-  不访问非公开接口。
+- It only reads visible DOM text on the current page.  
+  只读取当前页面可见 DOM 文本。
+- It does not access BOSS non-public APIs.  
+  不访问 BOSS 非公开接口。
 - It does not bypass verification.  
   不绕过验证码。
 - It does not perform job application actions.  
   不自动投递。
 - It does not perform message sending actions.  
   不自动发送消息。
-- The score is only a reference; the final decision is made by the user.  
-  评分不保证完全准确，最终是否投递由用户人工决定。
+- It does not read Cookie or Token values.  
+  不读取 Cookie / Token。
+- The final decision is made manually by the user.  
+  最终是否投递由用户人工决定。
+
+Branch note:
+
+分支说明：
+
+This feature currently lives in the `feature/job-fit-scoring` branch. The `main` branch stays relatively stable. If the panel proves stable after more use, it can be merged into `main` later.
+
+该功能目前位于 `feature/job-fit-scoring` 分支，`main` 分支保持相对稳定。如果后续验证稳定，再考虑合并到 `main`。
 
 ## Directory Structure / 目录结构
 
