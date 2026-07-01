@@ -698,6 +698,8 @@
     return '';
   }
 
+  const JOB_CITY_PATTERN = /(北京|天津|上海|深圳|广州|杭州|成都|武汉|西安|南京|苏州|重庆|长沙|郑州|青岛|厦门|合肥|宁波|佛山|东莞|无锡|济南|大连|沈阳|长春|哈尔滨|福州|南昌|昆明|贵阳|南宁|太原|石家庄|呼和浩特|乌鲁木齐|兰州|银川|西宁|海口)/;
+
   function parseSalary(text) {
     const normalized = clean(text).replace(/\s+/g, '');
     const day = normalized.match(/(\d{2,4})(?:-(\d{2,4}))?元\/天/);
@@ -710,7 +712,7 @@
       };
     }
 
-    const monthly = normalized.match(/(\d{1,3})(?:-(\d{1,3}))?K/);
+    const monthly = normalized.match(/(\d{1,3})(?:-(\d{1,3}))?K(?:·\d+薪|\/月)?/);
     if (monthly) {
       return {
         raw: monthly[0],
@@ -721,6 +723,313 @@
     }
 
     return { raw: '', type: '', low: 0, high: 0 };
+  }
+
+  function isLikelySalaryText(text) {
+    const value = clean(text);
+    if (!value) return false;
+    return /(?:\d{2,4}\s*-\s*\d{2,4}\s*元\s*\/\s*天|\d{1,3}\s*-\s*\d{1,3}\s*K(?:\s*·\s*\d+\s*薪|\s*\/\s*月)?)/i.test(value);
+  }
+
+  function getElementOwnText(el) {
+    if (!el || !el.childNodes) return '';
+
+    return clean(Array.from(el.childNodes)
+      .filter(node => node.nodeType === Node.TEXT_NODE)
+      .map(node => node.nodeValue || '')
+      .join(' '));
+  }
+
+  function isVisibleElement(el) {
+    if (!el) return false;
+    if (el.nodeType === Node.TEXT_NODE) {
+      return isVisibleElement(el.parentElement);
+    }
+    if (!el.getBoundingClientRect) return true;
+
+    const style = window.getComputedStyle ? window.getComputedStyle(el) : null;
+    if (style && (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0)) {
+      return false;
+    }
+
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  function findVisibleTextNodes(container) {
+    if (!container) return [];
+
+    const result = [];
+    const walker = document.createTreeWalker(
+        container,
+        NodeFilter.SHOW_TEXT,
+        {
+          acceptNode(node) {
+            const text = clean(node.nodeValue);
+            if (!text || !isVisibleElement(node.parentElement)) {
+              return NodeFilter.FILTER_REJECT;
+            }
+            return NodeFilter.FILTER_ACCEPT;
+          }
+        }
+    );
+
+    let node = walker.nextNode();
+    while (node) {
+      result.push({
+        node,
+        parent: node.parentElement,
+        text: clean(node.nodeValue)
+      });
+      node = walker.nextNode();
+    }
+
+    return result;
+  }
+
+  function collectVisibleSalaryCandidates() {
+    if (!document.body) return [];
+
+    return Array.from(document.body.querySelectorAll('*'))
+      .filter(isVisibleElement)
+      .map(el => {
+        const ownText = getElementOwnText(el);
+        const fallbackText = ownText ? '' : clean(el.textContent || '');
+        const text = ownText || (fallbackText.length <= 40 ? fallbackText : '');
+        if (!isLikelySalaryText(text)) return null;
+
+        return {
+          text,
+          el,
+          rect: el.getBoundingClientRect()
+        };
+      })
+      .filter(Boolean);
+  }
+
+  function isSearchConditionText(text) {
+    const value = clean(text);
+    if (!value) return true;
+    if (/搜索职位|搜索公司|推荐|筛选|职位类型|工作地点|薪资待遇|经验要求/.test(value)) return true;
+    if (/^(Java|java|AI|后端|前端|测试|产品|运营)[(（]?[^\s()（）]{2,8}[)）]?$/.test(value) && JOB_CITY_PATTERN.test(value)) return true;
+    if (/^(Java|java|AI|后端|前端|测试|产品|运营)$/.test(value)) return true;
+    return false;
+  }
+
+  function cleanJobTitle(title) {
+    let value = String(title || '')
+      .replace(/^(岗位标题|职位名称|职位)[:：]\s*/, '')
+      .replace(/\s*(收藏|立即沟通).*$/, '')
+      .trim();
+
+    const salaryMatch = value.match(/\d{2,4}\s*-\s*\d{2,4}\s*元\/天|\d{1,3}\s*-\s*\d{1,3}\s*K(?:·\d+薪|\/月)?/);
+    if (salaryMatch && salaryMatch.index > 0) {
+      value = value.slice(0, salaryMatch.index).trim();
+    }
+
+    const metaMatch = value.match(new RegExp(`\\s+${JOB_CITY_PATTERN.source}\\s+(?:每周\\s*\\d|\\d(?:-\\d)?\\s*天\\/周|\\d+\\s*个月|本科|大专|硕士|博士)`));
+    if (metaMatch && metaMatch.index > 0) {
+      value = value.slice(0, metaMatch.index).trim();
+    }
+
+    return clean(value)
+      .replace(/[|｜]+$/, '')
+      .trim();
+  }
+
+  function isValidJobTitle(title) {
+    const value = cleanJobTitle(title);
+    if (!value || value.length < 4 || value.length > 80) return false;
+    if (isSearchConditionText(value)) return false;
+    if (/^\d{2,4}-\d{2,4}元\/天$/.test(value)) return false;
+    if (/^\d{1,3}-\d{1,3}K/.test(value)) return false;
+    if (/^(北京|天津|上海|深圳|广州|杭州|成都|武汉|西安)\s/.test(value)) return false;
+    return /(Java|java|后端|服务端|AI|Agent|RAG|大模型|全栈|软件|研发|开发|工程师|实习|客户端|\.NET|C#|GIS|算法)/.test(value);
+  }
+
+  function getElementText(el) {
+    return clean(el ? (el.innerText || el.textContent || '') : '');
+  }
+
+  function findJobHeaderBlock(container) {
+    if (!container) return null;
+
+    const titleSelectors = [
+      'h1',
+      'h2',
+      '[class*="job-name"]',
+      '[class*="jobName"]',
+      '[class*="position"]',
+      '[class*="name"]',
+      '[title]'
+    ];
+    const titleNode = findJobTitleElement(container);
+
+    if (titleNode) {
+      let block = titleNode;
+      for (let i = 0; i < 4 && block.parentElement && block.parentElement !== container; i += 1) {
+        const parentText = getElementText(block.parentElement);
+        if (parentText.length > 40 && parentText.length < 1200 && parseSalary(parentText).raw) {
+          return block.parentElement;
+        }
+        block = block.parentElement;
+      }
+      return titleNode.parentElement || titleNode;
+    }
+
+    const blocks = Array.from(container.querySelectorAll('section, article, div'))
+      .map(el => ({ el, text: getElementText(el) }))
+      .filter(item =>
+        item.text.length >= 30 &&
+        item.text.length <= 1200 &&
+        parseSalary(item.text).raw &&
+        /(天\/周|每周|个月|本科|大专|硕士|博士|学历不限)/.test(item.text) &&
+        !/(职位描述|岗位职责|任职要求).{200,}/.test(item.text)
+      )
+      .sort((a, b) => a.text.length - b.text.length);
+
+    return blocks.length ? blocks[0].el : container;
+  }
+
+  function findJobTitleElement(container) {
+    if (!container) return null;
+
+    const titleSelectors = [
+      'h1',
+      'h2',
+      '[class*="job-name"]',
+      '[class*="jobName"]',
+      '[class*="position"]',
+      '[class*="name"]',
+      '[title]'
+    ];
+    const nodes = Array.from(container.querySelectorAll(titleSelectors.join(',')));
+
+    return nodes.find(node =>
+      isValidJobTitle(getElementOwnText(node)) ||
+      isValidJobTitle(getElementText(node)) ||
+      isValidJobTitle(node.getAttribute('title'))
+    ) || null;
+  }
+
+  function extractJobTitleFromHeader(container) {
+    const header = findJobHeaderBlock(container);
+    const sources = [];
+
+    if (header) {
+      const nodes = Array.from(header.querySelectorAll('h1,h2,[class*="job-name"],[class*="jobName"],[class*="position"],[class*="name"],[title]'));
+      for (const node of nodes) {
+        sources.push(getElementText(node) || node.getAttribute('title') || '');
+      }
+      sources.push(...getElementText(header).split('\n'));
+    }
+
+    if (container) {
+      sources.push(...getElementText(container).split('\n').slice(0, 20));
+    }
+
+    for (const source of sources) {
+      const title = cleanJobTitle(source);
+      if (isValidJobTitle(title)) {
+        return { value: title, source: header ? 'header-title' : 'detail-lines' };
+      }
+    }
+
+    return { value: '', source: 'unresolved' };
+  }
+
+  function extractSalaryFromHeader(container) {
+    const header = findJobHeaderBlock(container);
+    const titleElement = findJobTitleElement(container);
+    const headerTextNodes = findVisibleTextNodes(header);
+    const exactHeaderNode = headerTextNodes.find(item => isLikelySalaryText(item.text) && clean(item.text) === parseSalary(item.text).raw);
+    if (exactHeaderNode) return { value: parseSalary(exactHeaderNode.text), source: 'header-salary-node' };
+
+    const anyHeaderNode = headerTextNodes.find(item => isLikelySalaryText(item.text));
+    if (anyHeaderNode) return { value: parseSalary(anyHeaderNode.text), source: 'header-salary-node' };
+
+    const headerSalaryElement = header ? Array.from(header.querySelectorAll('*'))
+      .filter(isVisibleElement)
+      .map(el => getElementOwnText(el) || (clean(el.textContent || '').length <= 40 ? clean(el.textContent || '') : ''))
+      .find(isLikelySalaryText) : '';
+    if (headerSalaryElement) return { value: parseSalary(headerSalaryElement), source: 'header-salary-node' };
+
+    const nearbyTexts = [];
+    if (header) {
+      nearbyTexts.push(getElementText(header));
+      if (header.parentElement) nearbyTexts.push(getElementText(header.parentElement));
+    }
+
+    for (const text of nearbyTexts) {
+      const salary = parseSalary(text);
+      if (salary.raw) return { value: salary, source: 'header-nearby-text' };
+    }
+
+    const geometrySalary = extractSalaryByGeometry(container, titleElement);
+    if (geometrySalary.value.raw) {
+      return geometrySalary;
+    }
+
+    const topText = getElementText(container).slice(0, 1000);
+    const topSalary = parseSalary(topText);
+    if (topSalary.raw) {
+      return { value: topSalary, source: 'detail-container-text' };
+    }
+
+    return { value: parseSalary(''), source: 'unresolved' };
+  }
+
+  function extractSalaryByGeometry(detailContainer, titleElement) {
+    if (!detailContainer || !detailContainer.getBoundingClientRect) {
+      return { value: parseSalary(''), source: 'unresolved' };
+    }
+
+    const detailRect = detailContainer.getBoundingClientRect();
+    const titleRect = titleElement && titleElement.getBoundingClientRect ? titleElement.getBoundingClientRect() : null;
+    const candidates = collectVisibleSalaryCandidates()
+      .filter(candidate =>
+        candidate.rect.left >= detailRect.left - 20 &&
+        candidate.rect.right <= detailRect.right + 20 &&
+        candidate.rect.top >= detailRect.top - 20 &&
+        candidate.rect.top <= detailRect.top + 180
+      )
+      .sort((a, b) => {
+        const aDistance = titleRect ? Math.abs(a.rect.top - titleRect.top) : Math.abs(a.rect.top - detailRect.top);
+        const bDistance = titleRect ? Math.abs(b.rect.top - titleRect.top) : Math.abs(b.rect.top - detailRect.top);
+        if (aDistance !== bDistance) return aDistance - bDistance;
+        return a.rect.left - b.rect.left;
+      });
+
+    if (!candidates.length) {
+      return { value: parseSalary(''), source: 'unresolved' };
+    }
+
+    return {
+      value: parseSalary(candidates[0].text),
+      source: 'geometry-header-nearby'
+    };
+  }
+
+  function extractCityFromMetaLine(container) {
+    const header = findJobHeaderBlock(container);
+    const headerLines = getElementText(header).split(/职位描述|岗位职责|任职要求|工作地址|\n/).map(line => clean(line)).filter(Boolean);
+    const detailLines = getElementText(container).split(/职位描述|岗位职责|任职要求|\n/).map(line => clean(line)).filter(Boolean);
+    const candidateLines = headerLines.concat(detailLines.slice(0, 25));
+
+    for (const line of candidateLines) {
+      if (/工作地址|地址|地图/.test(line)) continue;
+      if (!/(天\/周|每周|个月|本科|大专|硕士|博士|学历不限|经验不限|在校|应届)/.test(line)) continue;
+      const city = firstMatch(line, [JOB_CITY_PATTERN]);
+      if (city) return { value: city, source: 'meta-line' };
+    }
+
+    for (const line of detailLines) {
+      if (!/工作地址|地址/.test(line)) continue;
+      const city = firstMatch(line, [JOB_CITY_PATTERN]);
+      if (city) return { value: city, source: 'address-fallback' };
+    }
+
+    return { value: '', source: 'unresolved' };
   }
 
   function parseExperience(text) {
@@ -779,23 +1088,26 @@
     const rawText = container ? (container.innerText || '') : getVisibleJobText();
     const text = clean(rawText);
     const lines = rawText.split('\n').map(line => clean(line)).filter(Boolean);
-    const salaryInfo = parseSalary(text);
+    const titleInfo = extractJobTitleFromHeader(container);
+    const salaryExtract = extractSalaryFromHeader(container);
+    const cityInfo = extractCityFromMetaLine(container);
+    const salaryInfo = salaryExtract.value.raw ? salaryExtract.value : parseSalary(text);
     const scheduleInfo = parseScheduleAndDuration(text);
     const titleLineRaw = lines.find(line =>
       /岗位标题|职位名称/.test(line)
     ) || lines.find(line =>
-      line.length <= 50 && /(Java|java|后端|服务端|AI|Agent|RAG|大模型|全栈|软件|研发|测试|实施|运营)/.test(line)
+      line.length <= 50 && isValidJobTitle(line)
     ) || '';
     const titleLine = titleLineRaw.replace(/^(岗位标题|职位名称)[:：]\s*/, '');
     const companyLine = lines.find(line =>
-      line.length <= 60 && /(有限公司|公司|科技|信息|智能|网络|软件|数据|集团)/.test(line) && line !== titleLine
+      line.length <= 60 && /(有限公司|公司|科技|信息|智能|网络|软件|数据|集团)/.test(line) && line !== (titleInfo.value || titleLine)
     ) || '';
 
     return {
-      jobTitle: titleLine,
+      jobTitle: titleInfo.value || cleanJobTitle(titleLine),
       salary: salaryInfo.raw,
       salaryInfo,
-      city: getCity(text),
+      city: cityInfo.value || getCity(text),
       experience: parseExperience(text),
       education: parseEducation(text),
       schedule: scheduleInfo.schedule,
@@ -805,7 +1117,10 @@
       address: firstMatch(text, [/工作地址\s*([^\n]{2,80})/, /(天津[^\n]{0,50})/, /(北京[^\n]{0,50})/]),
       tags: extractTags(text),
       jdText: text,
-      sourceType
+      sourceType,
+      titleSource: titleInfo.value ? titleInfo.source : (titleLine ? 'detail-lines' : 'unresolved'),
+      salarySource: salaryInfo.raw ? salaryExtract.source : 'unresolved',
+      citySource: cityInfo.value ? cityInfo.source : 'text-fallback'
     };
   }
 
@@ -1212,9 +1527,7 @@
   }
 
   function getCity(text) {
-    if (text.includes('天津')) return '天津';
-    if (text.includes('北京')) return '北京';
-    return '';
+    return firstMatch(text, [JOB_CITY_PATTERN]);
   }
 
   function extractCompanyPosition(text) {
@@ -1635,6 +1948,9 @@
         <div style="margin:8px 0 4px;color:#6b7280;font-size:12px;"><b>scheduleRaw:</b> ${escapeHtml(result.ruleInfo.scheduleRaw)}</div>
         <div style="margin-bottom:4px;color:#6b7280;font-size:12px;"><b>durationRaw:</b> ${escapeHtml(result.ruleInfo.durationRaw)}</div>
         <div style="margin-bottom:6px;color:#6b7280;font-size:12px;"><b>longInternRiskSource:</b> ${escapeHtml(result.ruleInfo.longInternRiskSource)}</div>
+        <div style="margin-bottom:4px;color:#6b7280;font-size:12px;"><b>titleSource:</b> ${escapeHtml(result.jobInfo.titleSource || 'unresolved')}</div>
+        <div style="margin-bottom:4px;color:#6b7280;font-size:12px;"><b>salarySource:</b> ${escapeHtml(result.jobInfo.salarySource || 'unresolved')}</div>
+        <div style="margin-bottom:6px;color:#6b7280;font-size:12px;"><b>citySource:</b> ${escapeHtml(result.jobInfo.citySource || 'unresolved')}</div>
         <div style="margin-bottom:6px;"><b>方向判断：</b>${escapeHtml(result.direction)}</div>
         <div style="margin-bottom:6px;"><b>Excel 档位：</b>${escapeHtml(result.excelTier)}</div>
         <div style="margin-bottom:6px;"><b>推荐开场白：</b>${escapeHtml(result.greetingType)}</div>
@@ -1756,6 +2072,19 @@
   window.JobFitScoring = {
     getVisibleJobText,
     findJobDetailContainer,
+    findJobHeaderBlock,
+    extractJobTitleFromHeader,
+    extractSalaryFromHeader,
+    extractSalaryByGeometry,
+    extractCityFromMetaLine,
+    cleanJobTitle,
+    isSearchConditionText,
+    findJobTitleElement,
+    getElementOwnText,
+    collectVisibleSalaryCandidates,
+    findVisibleTextNodes,
+    isVisibleElement,
+    isLikelySalaryText,
     extractJobInfoFromDetail,
     parseSalary,
     parseExperience,
