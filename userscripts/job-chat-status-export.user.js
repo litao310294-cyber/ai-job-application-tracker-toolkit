@@ -638,6 +638,17 @@
   let jobFitAiResult = null;
   let jobFitAiError = '';
   let jobFitAiLoading = false;
+  let jobFitFeedbackSaving = false;
+  let jobFitFeedbackSaved = false;
+  let jobFitFeedbackError = '';
+  let jobFitFeedbackLastResponse = null;
+  let jobFitFeedbackDraft = {
+    applyStatus: '未投递',
+    chatStatus: '未沟通',
+    interviewStatus: '未约面',
+    feedbackNote: '',
+    rejectReason: ''
+  };
   let jobFitTimer = null;
   let jobFitCollapsed = false;
 
@@ -1804,6 +1815,169 @@
     });
   }
 
+
+  function resetFeedbackDraft() {
+    jobFitFeedbackDraft = {
+      applyStatus: '未投递',
+      chatStatus: '未沟通',
+      interviewStatus: '未约面',
+      feedbackNote: '',
+      rejectReason: ''
+    };
+  }
+
+  function updateFeedbackDraftFromDom() {
+    const applyStatus = document.getElementById('job-fit-feedback-apply-status');
+    const chatStatus = document.getElementById('job-fit-feedback-chat-status');
+    const interviewStatus = document.getElementById('job-fit-feedback-interview-status');
+    const feedbackNote = document.getElementById('job-fit-feedback-note');
+    const rejectReason = document.getElementById('job-fit-feedback-reject-reason');
+
+    if (applyStatus) jobFitFeedbackDraft.applyStatus = clean(applyStatus.value || '未投递');
+    if (chatStatus) jobFitFeedbackDraft.chatStatus = clean(chatStatus.value || '未沟通');
+    if (interviewStatus) jobFitFeedbackDraft.interviewStatus = clean(interviewStatus.value || '未约面');
+    if (feedbackNote) jobFitFeedbackDraft.feedbackNote = feedbackNote.value || '';
+    if (rejectReason) jobFitFeedbackDraft.rejectReason = rejectReason.value || '';
+  }
+
+  function bindFeedbackDraftEvents() {
+    const fields = [
+      ['job-fit-feedback-apply-status', 'change'],
+      ['job-fit-feedback-chat-status', 'change'],
+      ['job-fit-feedback-interview-status', 'change'],
+      ['job-fit-feedback-note', 'input'],
+      ['job-fit-feedback-reject-reason', 'input']
+    ];
+
+    fields.forEach(([id, eventName]) => {
+      const el = document.getElementById(id);
+      if (!el || el.dataset.jobFitFeedbackBound === '1') return;
+      el.dataset.jobFitFeedbackBound = '1';
+      el.addEventListener(eventName, updateFeedbackDraftFromDom);
+    });
+  }
+
+  function readFeedbackField(id) {
+    const el = document.getElementById(id);
+    return el ? clean(el.value || '') : '';
+  }
+
+  function buildFeedbackPayload(aiResult) {
+    updateFeedbackDraftFromDom();
+    const rawJobRecordId = aiResult && aiResult.jobRecordId != null ? Number(aiResult.jobRecordId) : null;
+
+    return {
+      jobRecordId: Number.isFinite(rawJobRecordId) && rawJobRecordId > 0 ? rawJobRecordId : null,
+      taskId: aiResult && aiResult.taskId ? String(aiResult.taskId) : '',
+      applyStatus: jobFitFeedbackDraft.applyStatus || '未投递',
+      chatStatus: jobFitFeedbackDraft.chatStatus || '未沟通',
+      interviewStatus: jobFitFeedbackDraft.interviewStatus || '未约面',
+      feedbackNote: jobFitFeedbackDraft.feedbackNote || '',
+      rejectReason: jobFitFeedbackDraft.rejectReason || ''
+    };
+  }
+
+  function callSaveJobFeedback(payload) {
+    return new Promise((resolve, reject) => {
+      if (typeof GM_xmlhttpRequest !== 'function') {
+        reject(new Error('GM_xmlhttpRequest unavailable'));
+        return;
+      }
+
+      GM_xmlhttpRequest({
+        method: 'POST',
+        url: 'http://localhost:8080/api/job/feedback',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        data: JSON.stringify(payload),
+        timeout: 10000,
+        onload: response => {
+          if (response.status < 200 || response.status >= 300) {
+            reject(new Error(`HTTP ${response.status}`));
+            return;
+          }
+
+          try {
+            resolve(JSON.parse(response.responseText || '{}'));
+          } catch (e) {
+            reject(new Error('Invalid JSON response'));
+          }
+        },
+        onerror: () => reject(new Error('Request failed')),
+        ontimeout: () => reject(new Error('Request timeout'))
+      });
+    });
+  }
+
+  function feedbackSelect(id, options, selectedValue) {
+    const selected = selectedValue || options[0];
+
+    return `
+      <select id="${id}" style="width:100%;box-sizing:border-box;border:1px solid #d1d5db;border-radius:6px;padding:5px 6px;background:#fff;color:#111827;">
+        ${options.map(option => `<option value="${escapeHtml(option)}" ${option === selected ? 'selected' : ''}>${escapeHtml(option)}</option>`).join('')}
+      </select>
+    `;
+  }
+
+  function renderFeedbackStatus() {
+    if (jobFitFeedbackSaving) {
+      return '<div style="margin-top:6px;color:#6b7280;font-size:12px;">正在保存反馈...</div>';
+    }
+
+    if (jobFitFeedbackError) {
+      return `<div style="margin-top:6px;color:#dc2626;font-size:12px;">${escapeHtml(jobFitFeedbackError)}</div>`;
+    }
+
+    if (jobFitFeedbackSaved) {
+      const savedId = jobFitFeedbackLastResponse && jobFitFeedbackLastResponse.id ? ` #${jobFitFeedbackLastResponse.id}` : '';
+      return `<div style="margin-top:6px;color:#16a34a;font-size:12px;">反馈已保存${escapeHtml(savedId)}</div>`;
+    }
+
+    return '<div style="margin-top:6px;color:#6b7280;font-size:12px;">反馈只在手动点击保存后写入本地后端。</div>';
+  }
+
+  function renderFeedbackPanel(aiResult) {
+    if (!aiResult) return '';
+
+    const hasJobRecordId = aiResult.jobRecordId != null && String(aiResult.jobRecordId).trim() !== '';
+    const hasTaskId = aiResult.taskId != null && String(aiResult.taskId).trim() !== '';
+    const canSave = hasJobRecordId || hasTaskId;
+
+    return `
+      <details open style="margin-top:8px;padding:8px;border-radius:8px;background:#f8fafc;border:1px solid #e5e7eb;">
+        <summary style="cursor:pointer;font-weight:700;">投递反馈</summary>
+        <div style="margin-top:8px;">
+          <div style="margin-bottom:6px;color:#6b7280;font-size:12px;">
+            jobRecordId: ${escapeHtml(hasJobRecordId ? aiResult.jobRecordId : '未返回')}，
+            taskId: ${escapeHtml(hasTaskId ? aiResult.taskId : '未返回')}
+          </div>
+
+          <label style="display:block;margin:6px 0 3px;font-weight:600;">投递状态</label>
+          ${feedbackSelect('job-fit-feedback-apply-status', ['未投递', '已投递', '不投', '待定'], jobFitFeedbackDraft.applyStatus || '未投递')}
+
+          <label style="display:block;margin:6px 0 3px;font-weight:600;">沟通状态</label>
+          ${feedbackSelect('job-fit-feedback-chat-status', ['未沟通', '已沟通', 'HR已回复', '无回复'], jobFitFeedbackDraft.chatStatus || '未沟通')}
+
+          <label style="display:block;margin:6px 0 3px;font-weight:600;">面试状态</label>
+          ${feedbackSelect('job-fit-feedback-interview-status', ['未约面', '已约面', '一面通过', '一面挂', '已通过'], jobFitFeedbackDraft.interviewStatus || '未约面')}
+
+          <label style="display:block;margin:6px 0 3px;font-weight:600;">备注</label>
+          <textarea id="job-fit-feedback-note" placeholder="备注，例如岗位方向匹配，准备继续跟进" style="width:100%;height:52px;box-sizing:border-box;border:1px solid #d1d5db;border-radius:6px;padding:6px;resize:vertical;color:#111827;">${escapeHtml(jobFitFeedbackDraft.feedbackNote || '')}</textarea>
+
+          <label style="display:block;margin:6px 0 3px;font-weight:600;">不投/放弃原因</label>
+          <input id="job-fit-feedback-reject-reason" value="${escapeHtml(jobFitFeedbackDraft.rejectReason || '')}" placeholder="不投或放弃原因，可为空" style="width:100%;box-sizing:border-box;border:1px solid #d1d5db;border-radius:6px;padding:6px;color:#111827;" />
+
+          <button id="job-fit-feedback-save" ${jobFitFeedbackSaving || !canSave ? 'disabled' : ''} style="width:100%;margin-top:8px;border:none;background:#2563eb;color:#fff;border-radius:8px;padding:8px 10px;cursor:${jobFitFeedbackSaving || !canSave ? 'not-allowed' : 'pointer'};font-weight:700;opacity:${jobFitFeedbackSaving || !canSave ? '.65' : '1'};">
+            ${jobFitFeedbackSaving ? '保存中...' : '保存投递反馈'}
+          </button>
+          ${!canSave ? '<div style="margin-top:6px;color:#dc2626;font-size:12px;">缺少 jobRecordId 和 taskId，暂时无法保存反馈。</div>' : ''}
+          ${renderFeedbackStatus()}
+        </div>
+      </details>
+    `;
+  }
+
   function renderCompactList(items, emptyText) {
     const list = Array.isArray(items) ? items.filter(Boolean) : [];
     if (!list.length) return `<div style="color:#6b7280;">${escapeHtml(emptyText)}</div>`;
@@ -1890,6 +2064,11 @@
       jobFitAiResult = null;
       jobFitAiError = '';
       jobFitAiLoading = false;
+      jobFitFeedbackSaving = false;
+      jobFitFeedbackSaved = false;
+      jobFitFeedbackError = '';
+      jobFitFeedbackLastResponse = null;
+      resetFeedbackDraft();
       jobFitLastKey = resultKey;
     }
     jobFitLastResult = result;
@@ -1962,12 +2141,17 @@
         <button id="job-fit-copy" style="width:100%;border:none;background:${color};color:#fff;border-radius:8px;padding:8px 10px;cursor:pointer;font-weight:700;">复制岗位分析</button>
         <button id="job-fit-ai-analyze" ${jobFitAiLoading ? 'disabled' : ''} style="width:100%;margin-top:8px;border:none;background:#111827;color:#fff;border-radius:8px;padding:8px 10px;cursor:${jobFitAiLoading ? 'not-allowed' : 'pointer'};font-weight:700;opacity:${jobFitAiLoading ? '.65' : '1'};">${jobFitAiLoading ? '分析中...' : 'AI 深度核验'}</button>
         <div id="job-fit-copy-tip" style="margin-top:6px;color:#6b7280;font-size:12px;"></div>
-        <div id="job-fit-ai-result">${renderAiAnalyzeResult(jobFitAiResult, jobFitAiError, jobFitAiLoading)}</div>
+        <div id="job-fit-ai-result">
+          ${renderAiAnalyzeResult(jobFitAiResult, jobFitAiError, jobFitAiLoading)}
+          ${renderFeedbackPanel(jobFitAiResult)}
+        </div>
         <div style="margin-top:10px;color:#6b7280;font-size:12px;border-top:1px solid #e5e7eb;padding-top:8px;">
           仅分析当前页面可见文本，不自动投递，不自动发消息
         </div>
       </div>
     `;
+
+    bindFeedbackDraftEvents();
 
     document.getElementById('job-fit-toggle').onclick = () => {
       jobFitCollapsed = !jobFitCollapsed;
@@ -1991,6 +2175,11 @@
         jobFitAiLoading = true;
         jobFitAiError = '';
         jobFitAiResult = null;
+        jobFitFeedbackSaving = false;
+        jobFitFeedbackSaved = false;
+        jobFitFeedbackError = '';
+        jobFitFeedbackLastResponse = null;
+        resetFeedbackDraft();
         renderJobFitPanel(jobFitLastResult);
 
         try {
@@ -2000,6 +2189,37 @@
           jobFitAiError = '后端未启动或接口调用失败。请确认 backend 服务已在 http://localhost:8080 启动。';
         } finally {
           jobFitAiLoading = false;
+          renderJobFitPanel(jobFitLastResult);
+        }
+      };
+    }
+
+    const feedbackBtn = document.getElementById('job-fit-feedback-save');
+    if (feedbackBtn) {
+      feedbackBtn.onclick = async () => {
+        if (jobFitFeedbackSaving || !jobFitAiResult) return;
+
+        const payload = buildFeedbackPayload(jobFitAiResult);
+        if (!payload.jobRecordId && !payload.taskId) {
+          jobFitFeedbackError = '缺少 jobRecordId 和 taskId，无法保存反馈。';
+          jobFitFeedbackSaved = false;
+          renderJobFitPanel(jobFitLastResult);
+          return;
+        }
+
+        jobFitFeedbackSaving = true;
+        jobFitFeedbackSaved = false;
+        jobFitFeedbackError = '';
+        feedbackBtn.disabled = true;
+        feedbackBtn.textContent = '保存中...';
+
+        try {
+          jobFitFeedbackLastResponse = await callSaveJobFeedback(payload);
+          jobFitFeedbackSaved = true;
+        } catch (e) {
+          jobFitFeedbackError = '反馈保存失败，请确认后端已启动。';
+        } finally {
+          jobFitFeedbackSaving = false;
           renderJobFitPanel(jobFitLastResult);
         }
       };
@@ -2014,7 +2234,17 @@
   }
 
   function observeJobDetailChanges() {
-    const debouncedUpdate = () => {
+    const isOwnPanelMutation = mutation => {
+      const target = mutation && mutation.target;
+      if (!target) return false;
+      const el = target.nodeType === Node.ELEMENT_NODE ? target : target.parentElement;
+      return Boolean(el && el.closest && (el.closest('#job-fit-scoring-panel') || el.closest('#boss-export-panel')));
+    };
+
+    const debouncedUpdate = mutations => {
+      if (Array.isArray(mutations) && mutations.length && mutations.every(isOwnPanelMutation)) {
+        return;
+      }
       clearTimeout(jobFitTimer);
       jobFitTimer = setTimeout(updateJobFitPanel, 500);
     };
@@ -2099,6 +2329,13 @@
     getGreetingType,
     buildAiAnalyzePayload,
     callAiAnalyzeBackend,
+    buildFeedbackPayload,
+    callSaveJobFeedback,
+    renderFeedbackPanel,
+    renderFeedbackStatus,
+    resetFeedbackDraft,
+    updateFeedbackDraftFromDom,
+    bindFeedbackDraftEvents,
     renderAiAnalyzeResult,
     renderJobFitPanel,
     observeJobDetailChanges
