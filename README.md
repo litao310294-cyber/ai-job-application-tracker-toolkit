@@ -148,10 +148,8 @@ ai-job-application-tracker-toolkit/
 ├─ backend/                 Spring Boot backend
 ├─ userscripts/             Tampermonkey userscript
 ├─ docs/                    Public project documentation
-├─ prompts/                 Prompt templates
-├─ templates/               Excel templates
-├─ examples/                Mock example data
 ├─ .env.example             Environment variable template
+├─ LICENSE
 └─ README.md
 ```
 
