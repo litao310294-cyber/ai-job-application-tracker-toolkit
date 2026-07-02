@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lt.aijobscreeningagent.dto.JobAnalyzeRequest;
 import com.lt.aijobscreeningagent.dto.JobAnalyzeResponse;
 import com.lt.aijobscreeningagent.dto.JobRecordSummary;
+import com.lt.aijobscreeningagent.service.JobFieldSanitizer;
 import java.sql.PreparedStatement;
 import java.sql.Statement;
 import java.sql.Timestamp;
@@ -24,10 +25,16 @@ public class JobRecordRepository {
 
   private final JdbcTemplate jdbcTemplate;
   private final ObjectMapper objectMapper;
+  private final JobFieldSanitizer jobFieldSanitizer;
 
-  public JobRecordRepository(JdbcTemplate jdbcTemplate, ObjectMapper objectMapper) {
+  public JobRecordRepository(
+      JdbcTemplate jdbcTemplate,
+      ObjectMapper objectMapper,
+      JobFieldSanitizer jobFieldSanitizer
+  ) {
     this.jdbcTemplate = jdbcTemplate;
     this.objectMapper = objectMapper;
+    this.jobFieldSanitizer = jobFieldSanitizer;
   }
 
   public long saveJobRecord(JobAnalyzeRequest request) {
@@ -50,12 +57,12 @@ public class JobRecordRepository {
     KeyHolder keyHolder = new GeneratedKeyHolder();
     jdbcTemplate.update(connection -> {
       PreparedStatement ps = connection.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS);
-      ps.setString(1, request.jobTitle());
-      ps.setString(2, request.companyName());
-      ps.setString(3, request.salary());
-      ps.setString(4, request.city());
-      ps.setString(5, request.schedule());
-      ps.setString(6, request.duration());
+      ps.setString(1, jobFieldSanitizer.sanitizeJobTitle(request.jobTitle()));
+      ps.setString(2, jobFieldSanitizer.sanitizeCompanyName(request.companyName()));
+      ps.setString(3, jobFieldSanitizer.sanitizeShortField(request.salary(), 100));
+      ps.setString(4, jobFieldSanitizer.sanitizeShortField(request.city(), 100));
+      ps.setString(5, jobFieldSanitizer.sanitizeShortField(request.schedule(), 100));
+      ps.setString(6, jobFieldSanitizer.sanitizeShortField(request.duration(), 100));
       ps.setString(7, request.jobText());
       if (request.ruleScore() == null) {
         ps.setObject(8, null);

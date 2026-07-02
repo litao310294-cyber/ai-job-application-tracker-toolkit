@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lt.aijobscreeningagent.dto.JobHistoryRecord;
+import com.lt.aijobscreeningagent.service.JobFieldSanitizer;
 import java.sql.Timestamp;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -25,10 +26,16 @@ public class JobHistoryRepository {
 
   private final JdbcTemplate jdbcTemplate;
   private final ObjectMapper objectMapper;
+  private final JobFieldSanitizer jobFieldSanitizer;
 
-  public JobHistoryRepository(JdbcTemplate jdbcTemplate, ObjectMapper objectMapper) {
+  public JobHistoryRepository(
+      JdbcTemplate jdbcTemplate,
+      ObjectMapper objectMapper,
+      JobFieldSanitizer jobFieldSanitizer
+  ) {
     this.jdbcTemplate = jdbcTemplate;
     this.objectMapper = objectMapper;
+    this.jobFieldSanitizer = jobFieldSanitizer;
   }
 
   public List<JobHistoryRecord> findRecent(Integer limit) {
@@ -77,28 +84,86 @@ public class JobHistoryRepository {
   }
 
   public List<JobHistoryRecord> match(String companyName, String jobTitle) {
-    String company = normalize(companyName);
-    String title = normalize(jobTitle);
+    String company = jobFieldSanitizer.sanitizeCompanyName(companyName);
+    if (jobFieldSanitizer.isUnknownCompany(company)) {
+      company = "";
+    }
+    String title = jobFieldSanitizer.sanitizeJobTitle(jobTitle);
+    if ("未识别岗位".equals(title)) {
+      title = "";
+    }
     if (company.isBlank() && title.isBlank()) {
       return List.of();
     }
 
     if (!company.isBlank() && !title.isBlank()) {
-      return jdbcTemplate.query(baseSql() + """
-          where jr.company_name like ?
-            and jr.job_title like ?
-          order by coalesce(ja.created_at, jr.created_at) desc, jr.id desc
-          limit 5
-          """, mapper(), "%" + company + "%", "%" + title + "%");
+      List<JobHistoryRecord> records = jdbcTemplate.query(baseSql() + """
+          where (
+            (jr.company_name = ? and jr.job_title = ?)
+            or (jr.company_name = ? and (jr.job_title like ? or ? like concat('%', jr.job_title, '%')))
+            or (jr.company_name like ? and (jr.job_title like ? or ? like concat('%', jr.job_title, '%')))
+            or (jr.job_title like ? or ? like concat('%', jr.job_title, '%'))
+          )
+          order by
+            case
+              when jr.company_name = ? and jr.job_title = ? then 0
+              when jr.company_name = ? then 1
+              when jr.company_name like ? then 2
+              else 3
+            end,
+            coalesce(ja.created_at, jr.created_at) desc,
+            jr.id desc
+          limit 20
+          """,
+          mapper(),
+          company,
+          title,
+          company,
+          "%" + title + "%",
+          title,
+          "%" + company + "%",
+          "%" + title + "%",
+          title,
+          "%" + title + "%",
+          title,
+          company,
+          title,
+          company,
+          "%" + company + "%"
+      );
+      return records.stream()
+          .filter(record -> !jobFieldSanitizer.isDirtyCompanyName(record.companyName()))
+          .limit(5)
+          .toList();
     }
 
-    String pattern = "%" + (!company.isBlank() ? company : title) + "%";
-    return jdbcTemplate.query(baseSql() + """
-        where jr.company_name like ?
-           or jr.job_title like ?
+    if (!company.isBlank()) {
+      List<JobHistoryRecord> records = jdbcTemplate.query(baseSql() + """
+          where jr.company_name = ?
+             or jr.company_name like ?
+          order by
+            case when jr.company_name = ? then 0 else 1 end,
+            coalesce(ja.created_at, jr.created_at) desc,
+            jr.id desc
+          limit 20
+          """, mapper(), company, "%" + company + "%", company);
+      return records.stream()
+          .filter(record -> !jobFieldSanitizer.isDirtyCompanyName(record.companyName()))
+          .limit(5)
+          .toList();
+    }
+
+    String pattern = "%" + title + "%";
+    List<JobHistoryRecord> records = jdbcTemplate.query(baseSql() + """
+        where jr.job_title like ?
+           or ? like concat('%', jr.job_title, '%')
         order by coalesce(ja.created_at, jr.created_at) desc, jr.id desc
-        limit 5
-        """, mapper(), pattern, pattern);
+        limit 20
+        """, mapper(), pattern, title);
+    return records.stream()
+        .filter(record -> !jobFieldSanitizer.isDirtyCompanyName(record.companyName()))
+        .limit(5)
+        .toList();
   }
 
   public List<JobHistoryRecord> findRecentForRag(int limit) {

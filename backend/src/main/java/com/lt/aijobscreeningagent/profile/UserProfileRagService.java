@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.regex.Pattern;
 import com.lt.aijobscreeningagent.dto.JobHistoryRecord;
 import com.lt.aijobscreeningagent.repository.JobHistoryRepository;
+import com.lt.aijobscreeningagent.service.JobFieldSanitizer;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -26,15 +27,18 @@ public class UserProfileRagService {
   private final UserProfileRepository userProfileRepository;
   private final UserProfileRagRepository userProfileRagRepository;
   private final JobHistoryRepository jobHistoryRepository;
+  private final JobFieldSanitizer jobFieldSanitizer;
 
   public UserProfileRagService(
       UserProfileRepository userProfileRepository,
       UserProfileRagRepository userProfileRagRepository,
-      JobHistoryRepository jobHistoryRepository
+      JobHistoryRepository jobHistoryRepository,
+      JobFieldSanitizer jobFieldSanitizer
   ) {
     this.userProfileRepository = userProfileRepository;
     this.userProfileRagRepository = userProfileRagRepository;
     this.jobHistoryRepository = jobHistoryRepository;
+    this.jobFieldSanitizer = jobFieldSanitizer;
   }
 
   @Transactional
@@ -180,13 +184,17 @@ public class UserProfileRagService {
   }
 
   private String historyChunkTitle(JobHistoryRecord record) {
+    String cleanedCompanyName = cleanedHistoryCompanyName(record);
+    String cleanedJobTitle = cleanedHistoryJobTitle(record);
     return "历史投递反馈 - %s - %s".formatted(
-        normalize(record.companyName()).isBlank() ? "未知公司" : normalize(record.companyName()),
-        normalize(record.jobTitle()).isBlank() ? "未知岗位" : normalize(record.jobTitle())
+        cleanedCompanyName,
+        cleanedJobTitle
     );
   }
 
   private String historyChunkContent(JobHistoryRecord record) {
+    String cleanedCompanyName = cleanedHistoryCompanyName(record);
+    String cleanedJobTitle = cleanedHistoryJobTitle(record);
     return """
         公司：%s
         岗位：%s
@@ -203,8 +211,8 @@ public class UserProfileRagService {
         主要风险：%s
         简历匹配点：%s
         """.formatted(
-        fallback(record.companyName(), "未记录"),
-        fallback(record.jobTitle(), "未记录"),
+        cleanedCompanyName,
+        cleanedJobTitle,
         fallback(record.city(), "未记录"),
         fallback(record.salary(), "未记录"),
         fallback(record.schedule(), "未记录"),
@@ -219,6 +227,16 @@ public class UserProfileRagService {
         String.join("；", record.risks() == null ? List.of() : record.risks()),
         String.join("；", record.resumeMatches() == null ? List.of() : record.resumeMatches())
     ).trim();
+  }
+
+  private String cleanedHistoryCompanyName(JobHistoryRecord record) {
+    String cleaned = jobFieldSanitizer.sanitizeCompanyName(record.companyName());
+    return normalize(cleaned).isBlank() ? "未识别公司" : cleaned;
+  }
+
+  private String cleanedHistoryJobTitle(JobHistoryRecord record) {
+    String cleaned = jobFieldSanitizer.sanitizeJobTitle(record.jobTitle());
+    return normalize(cleaned).isBlank() ? "未识别岗位" : cleaned;
   }
 
   private String historySourceType(JobHistoryRecord record) {

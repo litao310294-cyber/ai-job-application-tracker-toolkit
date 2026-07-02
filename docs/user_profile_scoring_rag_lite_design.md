@@ -750,6 +750,93 @@ Rerank
 
 ---
 
+### 阶段 7：岗位信息抽取质量和历史匹配质量优化
+
+第 7 阶段用于修复历史记录中可能出现的脏字段问题，例如 companyName 被 JD 句子或岗位名污染，进而影响历史匹配和 RAG-Lite 历史 chunk 质量。
+
+#### 第 7.1：userscript 抽取优化
+
+userscript 对岗位字段的抽取优先级调整为：
+
+```text
+jobTitle：
+1. 右侧岗位详情标题区域 h1/h2/job-name/position/name/title
+2. 详情 header 附近短文本
+3. 详情前若干行兜底
+
+companyName：
+1. 公司/HR/招聘者/公司卡片相关节点
+2. 岗位 header 附近短文本
+3. 职位描述/岗位职责/任职要求之前的详情短行
+4. 识别不到时置空，前端显示“未识别”
+```
+
+companyName 不再直接从 JD 正文行中猜测，并会过滤包含“负责、参与、岗位职责、任职要求、接口开发、数据处理、问题排查、缺陷修复”等明显 JD 句子的文本。
+
+前端 debug 区域新增：
+
+```text
+titleSource
+companySource
+salarySource
+citySource
+```
+
+#### 第 7.2：后端字段清洗兜底
+
+后端新增 `JobFieldSanitizer`，在保存 `job_record` 前对字段做兜底清洗：
+
+```text
+companyName：
+- 空、过长、疑似 JD 句子、疑似岗位名时保存为“未识别公司”
+
+jobTitle：
+- 空、过长、疑似大段 JD 时保存为“未识别岗位”
+
+city / salary / schedule / duration：
+- trim 并限制长度
+```
+
+该清洗只影响 MySQL 保存字段，不改变 `/api/job/analyze` 的 AI 分析主流程。
+
+#### 第 7.3：历史匹配质量优化
+
+`GET /api/jobs/match` 规则优化：
+
+```text
+1. companyName 精确匹配 + jobTitle 精确匹配优先。
+2. companyName 精确匹配 + jobTitle 包含匹配其次。
+3. companyName 模糊匹配 + jobTitle 包含匹配再次。
+4. companyName 为空或“未识别公司”时，降低公司权重，只用 jobTitle 匹配。
+5. 过滤明显脏 companyName 的历史记录。
+6. 返回最多 5 条，并按最近时间排序。
+```
+
+示例：
+
+```text
+“大模型应用开发实习生”
+可以匹配
+“【线上办公】大模型应用开发实习”
+```
+
+#### 第 7 阶段仍未实现的边界
+
+```text
+PDF 上传
+embedding
+Redis Vector
+Milvus
+Rerank
+多用户登录
+自动投递
+自动发消息
+读取 BOSS Cookie / Token
+访问 BOSS 非公开接口
+```
+
+---
+
 ## 4. 建议数据表
 
 ### user_profile

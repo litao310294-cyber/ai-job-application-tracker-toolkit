@@ -1003,10 +1003,107 @@
     const value = cleanJobTitle(title);
     if (!value || value.length < 4 || value.length > 80) return false;
     if (isSearchConditionText(value)) return false;
+    if (isLikelyJdSentence(value)) return false;
     if (/^\d{2,4}-\d{2,4}元\/天$/.test(value)) return false;
     if (/^\d{1,3}-\d{1,3}K/.test(value)) return false;
     if (/^(北京|天津|上海|深圳|广州|杭州|成都|武汉|西安)\s/.test(value)) return false;
     return /(Java|java|后端|服务端|AI|Agent|RAG|大模型|全栈|软件|研发|开发|工程师|实习|客户端|\.NET|C#|GIS|算法)/.test(value);
+  }
+
+  function isLikelyJdSentence(value) {
+    const text = clean(value);
+    if (!text) return false;
+    if (text.length > 60) return true;
+    return /(岗位职责|职位描述|任职要求|负责|参与|熟悉|经验|接口开发|数据处理|问题排查|缺陷修复|功能迭代|系统设计|工作内容|任职资格|优先考虑)/.test(text);
+  }
+
+  function cleanCompanyName(value) {
+    return clean(value)
+      .replace(/^(公司|公司名称|企业名称)[:：]\s*/, '')
+      .replace(/\s*(招聘者|HR|人事|在招职位).*$/, '')
+      .replace(/\s*(已上市|未融资|不需要融资|融资未公开|天使轮|A轮|B轮|C轮).*$/, '')
+      .trim();
+  }
+
+  function isValidCompanyName(value) {
+    const text = cleanCompanyName(value);
+    if (!text || text.length < 2 || text.length > 40) return false;
+    if (isLikelyJdSentence(text)) return false;
+    if (isValidJobTitle(text)) return false;
+    if (isLikelySalaryText(text)) return false;
+    if (/^(未识别|暂无|职位|岗位|学历|经验|薪资|地址|工作地址|立即沟通|收藏)$/.test(text)) return false;
+    if (/(天\/周|个月|本科|硕士|博士|经验不限|Java|后端开发|服务端开发|实习生)$/.test(text)) return false;
+    return /(公司|集团|科技|信息|智能|网络|软件|数据|技术|教育|咨询|银行|金融|汽车|电子|通信|互联|有限|股份|中心|研究院|字节跳动|京东|美团|快手|百度|阿里|腾讯|小米|网易|滴滴|蚂蚁|华为|抖音|小红书|携程|顺丰|联想|用友|金山|搜狐|新浪)/.test(text);
+  }
+
+  function isCompanyContextText(text) {
+    return /(公司介绍|公司信息|工商信息|企业信息|融资|已上市|未融资|不需要融资|在招职位|招聘者|HR|人事|B轮|C轮|D轮|100-499人|500-999人|1000-9999人|10000人以上)/.test(clean(text));
+  }
+
+  function extractCompanyCandidateFromText(text) {
+    const value = cleanCompanyName(text);
+    if (isValidCompanyName(value)) return value;
+
+    const match = value.match(/([\u4e00-\u9fa5A-Za-z0-9（）()·\-]{2,30}(?:公司|集团|科技|信息|智能|网络|软件|数据|技术|教育|咨询|银行|金融|汽车|电子|通信|互联|有限|股份|中心|研究院))/);
+    if (match && isValidCompanyName(match[1])) return match[1];
+    return '';
+  }
+
+  function collectCompanyCandidatesFromElements(elements, source) {
+    const candidates = [];
+
+    elements.forEach(node => {
+      if (!node) return;
+      const context = getElementText(node.parentElement || node);
+      const texts = [
+        getElementOwnText(node),
+        node.getAttribute && node.getAttribute('title') || '',
+        ...getElementText(node).split('\n').slice(0, 8)
+      ];
+
+      texts.forEach(text => {
+        const direct = extractCompanyCandidateFromText(text);
+        if (direct) {
+          candidates.push({ value: direct, source });
+          return;
+        }
+
+        const compact = cleanCompanyName(text);
+        if (
+          compact.length >= 2 &&
+          compact.length <= 24 &&
+          isCompanyContextText(context) &&
+          !isLikelyJdSentence(compact) &&
+          !isValidJobTitle(compact) &&
+          !isLikelySalaryText(compact) &&
+          !/(天\/周|个月|本科|硕士|博士|职位|岗位|职责|要求|立即沟通|收藏)/.test(compact)
+        ) {
+          candidates.push({ value: compact, source });
+        }
+      });
+    });
+
+    return candidates;
+  }
+
+  function extractCompanyNameByGeometry(container) {
+    if (!container || !document.body || !container.getBoundingClientRect) {
+      return { value: '', source: 'unresolved' };
+    }
+
+    const rect = container.getBoundingClientRect();
+    const candidates = Array.from(document.body.querySelectorAll('*'))
+      .filter(isVisibleElement)
+      .filter(el => {
+        const elRect = el.getBoundingClientRect();
+        return elRect.left >= rect.left - 40 &&
+          elRect.right <= rect.right + 460 &&
+          elRect.top >= rect.top - 120 &&
+          elRect.top <= rect.bottom + 520;
+      });
+
+    const companyCandidates = collectCompanyCandidatesFromElements(candidates, 'right-geometry-company');
+    return companyCandidates.length ? companyCandidates[0] : { value: '', source: 'unresolved' };
   }
 
   function getElementText(el) {
@@ -1095,6 +1192,54 @@
       if (isValidJobTitle(title)) {
         return { value: title, source: header ? 'header-title' : 'detail-lines' };
       }
+    }
+
+    return { value: '', source: 'unresolved' };
+  }
+
+  function extractCompanyNameFromDetail(container) {
+    if (!container) return { value: '', source: 'unresolved' };
+
+    const candidateSelectors = [
+      '[class*="company"]',
+      '[class*="brand"]',
+      '[class*="boss"]',
+      '[class*="recruiter"]',
+      '[class*="job-boss"]',
+      '[class*="sider"]',
+      '[class*="business"]'
+    ];
+
+    const selectorCandidates = collectCompanyCandidatesFromElements(
+      Array.from(container.querySelectorAll(candidateSelectors.join(','))),
+      'company-card'
+    );
+
+    if (selectorCandidates.length) {
+      return selectorCandidates[0];
+    }
+
+    const header = findJobHeaderBlock(container);
+    const headerCandidates = getElementText(header)
+      .split('\n')
+      .map(extractCompanyCandidateFromText)
+      .filter(Boolean);
+    if (headerCandidates.length) {
+      return { value: headerCandidates[0], source: 'header-company' };
+    }
+
+    const beforeJdText = getElementText(container).split(/职位描述|岗位职责|任职要求|工作内容/)[0] || '';
+    const lineCandidates = beforeJdText
+      .split('\n')
+      .map(extractCompanyCandidateFromText)
+      .filter(Boolean);
+    if (lineCandidates.length) {
+      return { value: lineCandidates[0], source: 'detail-company-lines' };
+    }
+
+    const geometryCandidate = extractCompanyNameByGeometry(container);
+    if (geometryCandidate.value) {
+      return geometryCandidate;
     }
 
     return { value: '', source: 'unresolved' };
@@ -1251,6 +1396,7 @@
     const text = clean(rawText);
     const lines = rawText.split('\n').map(line => clean(line)).filter(Boolean);
     const titleInfo = extractJobTitleFromHeader(container);
+    const companyInfo = extractCompanyNameFromDetail(container);
     const salaryExtract = extractSalaryFromHeader(container);
     const cityInfo = extractCityFromMetaLine(container);
     const salaryInfo = salaryExtract.value.raw ? salaryExtract.value : parseSalary(text);
@@ -1261,9 +1407,6 @@
       line.length <= 50 && isValidJobTitle(line)
     ) || '';
     const titleLine = titleLineRaw.replace(/^(岗位标题|职位名称)[:：]\s*/, '');
-    const companyLine = lines.find(line =>
-      line.length <= 60 && /(有限公司|公司|科技|信息|智能|网络|软件|数据|集团)/.test(line) && line !== (titleInfo.value || titleLine)
-    ) || '';
 
     return {
       jobTitle: titleInfo.value || cleanJobTitle(titleLine),
@@ -1274,13 +1417,14 @@
       education: parseEducation(text),
       schedule: scheduleInfo.schedule,
       duration: scheduleInfo.duration,
-      companyName: companyLine,
+      companyName: companyInfo.value || '',
       companySize: firstMatch(text, [/(0-20人|20-99人|100-499人|500-999人|1000-9999人|10000人以上|10000\+人?)/]),
       address: firstMatch(text, [/工作地址\s*([^\n]{2,80})/, /(天津[^\n]{0,50})/, /(北京[^\n]{0,50})/]),
       tags: extractTags(text),
       jdText: text,
       sourceType,
       titleSource: titleInfo.value ? titleInfo.source : (titleLine ? 'detail-lines' : 'unresolved'),
+      companyNameSource: companyInfo.source,
       salarySource: salaryInfo.raw ? salaryExtract.source : 'unresolved',
       citySource: cityInfo.value ? cityInfo.source : 'text-fallback'
     };
@@ -1916,6 +2060,11 @@
 
     const conclusionInfo = getConclusion(score, riskFlags, context);
 
+    const fallbackCompanyPosition = extractCompanyPosition(text);
+    const resolvedCompanyName = isValidCompanyName(jobInfo.companyName)
+      ? cleanCompanyName(jobInfo.companyName)
+      : (isValidCompanyName(fallbackCompanyPosition.company) ? cleanCompanyName(fallbackCompanyPosition.company) : '');
+
     const result = {
       score,
       rawScore: Math.min(100, rawScore),
@@ -1927,8 +2076,8 @@
       riskFlags,
       greetingType: getGreetingType(direction, city, conclusionInfo.conclusion),
       companyPosition: {
-        company: jobInfo.companyName || extractCompanyPosition(text).company,
-        position: jobInfo.jobTitle || extractCompanyPosition(text).position
+        company: resolvedCompanyName,
+        position: jobInfo.jobTitle || fallbackCompanyPosition.position
       },
       city,
       jobInfo,
@@ -2485,6 +2634,7 @@
         <div style="margin-bottom:8px;padding:6px 8px;border-radius:8px;background:${scoringConfigSource === 'backend' ? '#ecfdf5' : '#f9fafb'};color:${scoringConfigSource === 'backend' ? '#047857' : '#6b7280'};font-size:12px;">
           评分配置：${escapeHtml(scoringConfigStatusText)}${scoringConfigLoaded ? '（已确认）' : ''}
         </div>
+        <div style="margin-bottom:6px;"><b>当前识别公司：</b>${escapeHtml(result.companyPosition.company || '未识别')}</div>
         <div style="margin-bottom:6px;"><b>当前识别岗位：</b>${escapeHtml(result.companyPosition.position || '未识别')}</div>
         <div style="margin-bottom:6px;"><b>当前识别薪资：</b>${escapeHtml(result.jobInfo.salary || '未识别')}</div>
         <div style="margin-bottom:6px;"><b>当前识别城市：</b>${escapeHtml(result.city || '未识别')}</div>
@@ -2498,6 +2648,7 @@
         <div style="margin-bottom:4px;color:#6b7280;font-size:12px;"><b>durationRaw:</b> ${escapeHtml(result.ruleInfo.durationRaw)}</div>
         <div style="margin-bottom:6px;color:#6b7280;font-size:12px;"><b>longInternRiskSource:</b> ${escapeHtml(result.ruleInfo.longInternRiskSource)}</div>
         <div style="margin-bottom:4px;color:#6b7280;font-size:12px;"><b>titleSource:</b> ${escapeHtml(result.jobInfo.titleSource || 'unresolved')}</div>
+        <div style="margin-bottom:4px;color:#6b7280;font-size:12px;"><b>companySource:</b> ${escapeHtml(result.jobInfo.companyNameSource || 'unresolved')}</div>
         <div style="margin-bottom:4px;color:#6b7280;font-size:12px;"><b>salarySource:</b> ${escapeHtml(result.jobInfo.salarySource || 'unresolved')}</div>
         <div style="margin-bottom:6px;color:#6b7280;font-size:12px;"><b>citySource:</b> ${escapeHtml(result.jobInfo.citySource || 'unresolved')}</div>
         <div style="margin-bottom:6px;"><b>方向判断：</b>${escapeHtml(result.direction)}</div>
