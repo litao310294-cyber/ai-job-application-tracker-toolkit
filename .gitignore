@@ -24,3 +24,11 @@ __pycache__/
 !examples/mock_chat_export.tsv
 PROJECT_STATUS_REPORT.md
 *_STATUS_REPORT.md
+private_notes/
+personal_notes/
+interview_notes/
+resume_notes/
+*_private.md
+*_interview.md
+*_resume.md
+*.local.md
