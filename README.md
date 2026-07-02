@@ -74,16 +74,19 @@ docker run -d --name ai-job-agent-redis -p 6379:6379 redis:7-alpine
 
 ### 3. 配置环境变量
 
-```bash
-DEEPSEEK_API_KEY=你的 DeepSeek API Key
-MYSQL_URL=jdbc:mysql://localhost:3306/ai_job_agent?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
-MYSQL_USERNAME=root
-MYSQL_PASSWORD=你的 MySQL 密码
-REDIS_HOST=localhost
-REDIS_PORT=6379
-```
+参考 `.env.example` 配置本地环境变量。该文件只保留变量名，不包含真实值。
 
-不要把真实 API Key 或数据库密码提交到 GitHub。
+需要配置：
+
+- `DEEPSEEK_API_KEY`
+- `MYSQL_URL`
+- `MYSQL_USERNAME`
+- `MYSQL_PASSWORD`
+- `REDIS_HOST`
+- `REDIS_PORT`
+- `REDIS_PASSWORD`
+
+不要把真实 API Key 或数据库密码提交到 GitHub，也不要提交 `.env`。
 
 ### 4. 启动后端
 

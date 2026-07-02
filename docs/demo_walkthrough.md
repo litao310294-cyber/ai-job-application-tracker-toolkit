@@ -45,11 +45,7 @@ PONG
 
 设置环境变量：
 
-```bash
-DEEPSEEK_API_KEY=你的 DeepSeek API Key
-MYSQL_USERNAME=root
-MYSQL_PASSWORD=你的 MySQL 密码
-```
+参考仓库根目录的 `.env.example`，在本机配置 `DEEPSEEK_API_KEY`、`MYSQL_URL`、`MYSQL_USERNAME`、`MYSQL_PASSWORD`、`REDIS_HOST`、`REDIS_PORT` 和 `REDIS_PASSWORD`。不要把真实值写入文档或提交到 GitHub。
 
 启动：
 
