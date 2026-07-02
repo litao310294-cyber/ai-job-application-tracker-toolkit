@@ -13,6 +13,35 @@ public record JobAnalyzeResponse(
     List<String> risks,
     List<String> resumeMatches,
     List<String> interviewFocus,
-    String suggestedMessage
+    String suggestedMessage,
+    JobAnalyzeProfileRag profileRag
 ) {
+  public JobAnalyzeResponse(
+      Long jobRecordId,
+      String taskId,
+      String status,
+      String decision,
+      Integer score,
+      String direction,
+      List<String> reasons,
+      List<String> risks,
+      List<String> resumeMatches,
+      List<String> interviewFocus,
+      String suggestedMessage
+  ) {
+    this(
+        jobRecordId,
+        taskId,
+        status,
+        decision,
+        score,
+        direction,
+        reasons,
+        risks,
+        resumeMatches,
+        interviewFocus,
+        suggestedMessage,
+        null
+    );
+  }
 }

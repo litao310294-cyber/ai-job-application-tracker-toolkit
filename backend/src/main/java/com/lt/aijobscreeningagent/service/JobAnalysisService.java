@@ -2,6 +2,8 @@ package com.lt.aijobscreeningagent.service;
 
 import com.lt.aijobscreeningagent.config.LlmProperties;
 import com.lt.aijobscreeningagent.dto.JobAnalyzeRequest;
+import com.lt.aijobscreeningagent.dto.JobAnalyzeProfileRag;
+import com.lt.aijobscreeningagent.dto.JobAnalyzeProfileRagChunk;
 import com.lt.aijobscreeningagent.dto.JobAnalyzeResponse;
 import com.lt.aijobscreeningagent.dto.JobRecordSummary;
 import com.lt.aijobscreeningagent.dto.LlmAnalyzeResult;
@@ -54,18 +56,18 @@ public class JobAnalysisService {
 
     String taskId = UUID.randomUUID().toString();
     long jobRecordId = jobRecordRepository.saveJobRecord(request);
+    ProfileRagContext profileRagContext = buildProfileRagContext(request, profileVersion);
     JobAnalyzeResponse response;
 
     if (!llmProperties.isEnabled() || !llmProperties.hasApiKey()) {
-      response = fallbackAnalyze(jobRecordId, taskId, request);
+      response = fallbackAnalyze(jobRecordId, taskId, request, profileRagContext.profileRag());
       jobRecordRepository.saveJobAnalysis(jobRecordId, response);
       jobAnalysisCacheService.put(cacheKey, response);
       return response;
     }
 
     try {
-      String profileContext = buildProfileContext(request);
-      LlmAnalyzeResult result = llmClient.analyze(request, profileContext);
+      LlmAnalyzeResult result = llmClient.analyze(request, profileRagContext.promptContext());
       response = new JobAnalyzeResponse(
           jobRecordId,
           taskId,
@@ -77,10 +79,11 @@ public class JobAnalysisService {
           result.risks(),
           result.resumeMatches(),
           result.interviewFocus(),
-          result.suggestedMessage()
+          result.suggestedMessage(),
+          profileRagContext.profileRag()
       );
     } catch (RuntimeException e) {
-      response = fallbackAnalyze(jobRecordId, taskId, request);
+      response = fallbackAnalyze(jobRecordId, taskId, request, profileRagContext.profileRag());
     }
 
     jobRecordRepository.saveJobAnalysis(jobRecordId, response);
@@ -93,6 +96,15 @@ public class JobAnalysisService {
   }
 
   private JobAnalyzeResponse fallbackAnalyze(Long jobRecordId, String taskId, JobAnalyzeRequest request) {
+    return fallbackAnalyze(jobRecordId, taskId, request, null);
+  }
+
+  private JobAnalyzeResponse fallbackAnalyze(
+      Long jobRecordId,
+      String taskId,
+      JobAnalyzeRequest request,
+      JobAnalyzeProfileRag profileRag
+  ) {
     int score = request.ruleScore() != null ? request.ruleScore() : 72;
     String decision = request.ruleConclusion() != null && !request.ruleConclusion().isBlank()
         ? request.ruleConclusion()
@@ -125,7 +137,8 @@ public class JobAnalysisService {
             "说明接口设计、数据库设计或服务联调中的具体工作",
             "准备回答为什么选择该岗位方向"
         ),
-        "您好，我对这个岗位比较感兴趣，也有相关后端开发/AI 应用项目经历，想进一步了解岗位的具体工作内容和实习安排。"
+        "您好，我对这个岗位比较感兴趣，也有相关后端开发/AI 应用项目经历，想进一步了解岗位的具体工作内容和实习安排。",
+        profileRag
     );
   }
 
@@ -157,7 +170,7 @@ public class JobAnalysisService {
     }
   }
 
-  private String buildProfileContext(JobAnalyzeRequest request) {
+  private ProfileRagContext buildProfileRagContext(JobAnalyzeRequest request, String profileVersion) {
     String profileQuery = buildProfileQuery(request);
     try {
       log.info("Profile RAG query: {}", abbreviate(profileQuery, 300));
@@ -167,10 +180,26 @@ public class JobAnalysisService {
           PROFILE_RAG_TOP_K
       );
       log.info("Profile RAG retrieved {} chunks.", chunks.size());
-      return formatProfileContext(chunks);
+      JobAnalyzeProfileRag profileRag = new JobAnalyzeProfileRag(
+          true,
+          profileVersion,
+          profileQuery,
+          chunks.size(),
+          toResponseChunks(chunks),
+          chunks.isEmpty() ? "No matched profile chunks." : null
+      );
+      return new ProfileRagContext(formatProfileContext(chunks), profileRag);
     } catch (RuntimeException e) {
       log.warn("Profile RAG search failed, continue analyze without profile chunks.");
-      return noProfileContext();
+      JobAnalyzeProfileRag profileRag = new JobAnalyzeProfileRag(
+          false,
+          profileVersion,
+          profileQuery,
+          0,
+          List.of(),
+          "Profile RAG search failed, analyze continued without profile chunks."
+      );
+      return new ProfileRagContext(noProfileContext(), profileRag);
     }
   }
 
@@ -210,11 +239,33 @@ public class JobAnalysisService {
         """;
   }
 
+  private List<JobAnalyzeProfileRagChunk> toResponseChunks(List<ProfileSearchChunkResponse> chunks) {
+    if (chunks == null || chunks.isEmpty()) {
+      return List.of();
+    }
+    return chunks.stream()
+        .limit(PROFILE_RAG_TOP_K)
+        .map(chunk -> new JobAnalyzeProfileRagChunk(
+            chunk.id(),
+            valueOrEmpty(chunk.title()),
+            abbreviate(valueOrEmpty(chunk.content()), 200),
+            chunk.score(),
+            valueOrEmpty(chunk.sourceType())
+        ))
+        .toList();
+  }
+
   private String abbreviate(String value, int maxLength) {
     String normalized = valueOrEmpty(value).replaceAll("\\s+", " ").trim();
     if (normalized.length() <= maxLength) {
       return normalized;
     }
     return normalized.substring(0, maxLength) + "...";
+  }
+
+  private record ProfileRagContext(
+      String promptContext,
+      JobAnalyzeProfileRag profileRag
+  ) {
   }
 }
