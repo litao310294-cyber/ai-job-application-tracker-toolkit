@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.regex.Pattern;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 @Service
@@ -31,18 +32,21 @@ public class UserProfileRagService {
     this.userProfileRagRepository = userProfileRagRepository;
   }
 
+  @Transactional
   public ProfileReindexResponse reindexDefaultProfile() {
     UserProfile profile = userProfileRepository.findDefault()
         .orElseThrow(() -> new ResponseStatusException(
             HttpStatus.BAD_REQUEST,
             "Default user profile is not initialized"
         ));
+    String profileName = profile.profileName();
 
     Map<String, String> chunks = buildChunkMap(profile);
     String rawText = buildRawText(chunks);
 
-    userProfileRagRepository.deleteDefaultProfileIndex();
-    Long documentId = userProfileRagRepository.saveDocument(rawText, sha256(rawText));
+    UserProfileRagRepository.DeletedIndexCount deletedIndexCount =
+        userProfileRagRepository.deleteProfileIndex(profileName);
+    Long documentId = userProfileRagRepository.saveDocument(profileName, rawText, sha256(rawText));
 
     int index = 0;
     for (Map.Entry<String, String> entry : chunks.entrySet()) {
@@ -51,6 +55,7 @@ public class UserProfileRagService {
         continue;
       }
       userProfileRagRepository.saveChunk(
+          profileName,
           documentId,
           index,
           entry.getKey(),
@@ -61,7 +66,14 @@ public class UserProfileRagService {
       index++;
     }
 
-    return new ProfileReindexResponse(true, profile.profileName(), documentId, index);
+    return new ProfileReindexResponse(
+        true,
+        profileName,
+        documentId,
+        index,
+        deletedIndexCount.deletedDocumentCount(),
+        deletedIndexCount.deletedChunkCount()
+    );
   }
 
   public ProfileSearchResponse searchDefaultProfile(String query, Integer topK) {

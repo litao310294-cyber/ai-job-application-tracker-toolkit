@@ -22,16 +22,20 @@ public class UserProfileRagRepository {
     this.jdbcTemplate = jdbcTemplate;
   }
 
-  public void deleteDefaultProfileIndex() {
-    jdbcTemplate.update("""
+  public DeletedIndexCount deleteProfileIndex(String profileName) {
+    int deletedChunkCount = jdbcTemplate.update("""
         delete c from user_profile_chunk c
         join user_profile_document d on c.document_id = d.id
         where d.profile_name = ?
-        """, DEFAULT_PROFILE_NAME);
-    jdbcTemplate.update("delete from user_profile_document where profile_name = ?", DEFAULT_PROFILE_NAME);
+        """, profileName);
+    int deletedDocumentCount = jdbcTemplate.update(
+        "delete from user_profile_document where profile_name = ?",
+        profileName
+    );
+    return new DeletedIndexCount(deletedDocumentCount, deletedChunkCount);
   }
 
-  public Long saveDocument(String rawText, String contentHash) {
+  public Long saveDocument(String profileName, String rawText, String contentHash) {
     String sql = """
         insert into user_profile_document (
           profile_name,
@@ -48,7 +52,7 @@ public class UserProfileRagRepository {
     KeyHolder keyHolder = new GeneratedKeyHolder();
     jdbcTemplate.update(connection -> {
       PreparedStatement ps = connection.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS);
-      ps.setString(1, DEFAULT_PROFILE_NAME);
+      ps.setString(1, profileName);
       ps.setString(2, "manual_profile");
       ps.setString(3, "default user profile");
       ps.setString(4, "manual_input");
@@ -64,7 +68,15 @@ public class UserProfileRagRepository {
     return key.longValue();
   }
 
-  public void saveChunk(Long documentId, int chunkIndex, String title, String content, String contentHash, int scoreHint) {
+  public void saveChunk(
+      String profileName,
+      Long documentId,
+      int chunkIndex,
+      String title,
+      String content,
+      String contentHash,
+      int scoreHint
+  ) {
     jdbcTemplate.update("""
         insert into user_profile_chunk (
           profile_name,
@@ -78,7 +90,7 @@ public class UserProfileRagRepository {
           created_at
         ) values (?, ?, ?, ?, ?, ?, ?, ?, now())
         """,
-        DEFAULT_PROFILE_NAME,
+        profileName,
         documentId,
         chunkIndex,
         title,
@@ -125,5 +137,11 @@ public class UserProfileRagRepository {
 
   private LocalDateTime toLocalDateTime(Timestamp timestamp) {
     return timestamp == null ? null : timestamp.toLocalDateTime();
+  }
+
+  public record DeletedIndexCount(
+      int deletedDocumentCount,
+      int deletedChunkCount
+  ) {
   }
 }

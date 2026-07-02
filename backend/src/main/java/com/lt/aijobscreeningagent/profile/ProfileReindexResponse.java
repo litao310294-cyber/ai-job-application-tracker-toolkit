@@ -4,6 +4,8 @@ public record ProfileReindexResponse(
     boolean success,
     String profileName,
     Long documentId,
-    int chunkCount
+    int chunkCount,
+    int deletedDocumentCount,
+    int deletedChunkCount
 ) {
 }
