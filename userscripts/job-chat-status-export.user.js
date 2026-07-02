@@ -1,11 +1,14 @@
 // ==UserScript==
 // @name         Job Chat Status Export Helper
 // @namespace    job-chat-status-export-helper
-// @version      1.2.0
+// @version      1.3.1
 // @description  Export visible job chat status from the current browser page into TSV format for personal job-search follow-up.
 // @match        https://www.zhipin.com/*
 // @run-at       document-end
 // @grant        GM_setClipboard
+// @grant        GM_xmlhttpRequest
+// @connect      localhost
+// @connect      127.0.0.1
 // ==/UserScript==
 
 (function () {
@@ -18,6 +21,11 @@
    * 只读取当前登录用户在网页聊天列表里已经能看到的 DOM 文本。
    * 仅用于读取页面可见文本、整理页面已展示状态、导出 TSV 和本地辅助分析。
    * 不访问非公开接口、不处理验证码或登录校验、不执行投递或消息发送操作。
+   *
+   * Job Fit Scoring / 岗位匹配度实时评分：
+   * 仅基于当前页面可见文本进行本地规则评分，不访问非公开接口。
+   * 不绕过验证码，不自动投递，不自动发送消息。
+   * 评分只作为个人求职跟进参考，最终是否投递由用户人工决定。
    */
 
   const MAX_SCROLLS = 12; // 想读取更多联系人，可以改成 20。建议低频手动使用，不要高频循环。
@@ -569,6 +577,2212 @@
     document.getElementById('boss-export-close').onclick = () => panel.remove();
   }
 
+  const JOB_FIT_KEYWORDS = {
+    strongDirections: [
+      'Java开发实习生', 'Java实习生', 'Java后端', '后端开发', '服务端开发',
+      'Java开发实习', '产品研发-Java开发实习', 'Java研发-实习', 'Java研发实习',
+      '后端开发实习生', '后端研发实习生',
+      'AI应用开发', '大模型应用', 'Agent', '智能体', 'RAG'
+    ],
+    mediumDirections: ['软件开发实习生', '研发实习生', '全栈工程师'],
+    nonTechDirections: ['运营', '销售', '客服', '剪辑', '设计', '编辑', '标注'],
+    javaStack: [
+      'Java', 'Spring', 'Spring Boot', 'SpringCloud', 'Spring Cloud',
+      'MyBatis', 'MyBatis-Plus', 'MyBatis Plus', 'MySQL', 'Redis', 'MQ',
+      'RabbitMQ', 'Kafka', 'Nginx', 'JVM', '微服务', '后端接口', '数据库设计', '缓存',
+      'SpringMVC', 'Dubbo'
+    ],
+    aiStack: [
+      'AI应用', '大模型', 'LLM', 'Agent', '智能体', 'RAG', 'Prompt',
+      'Tool Calling', 'LangChain', 'AutoGen', '知识库', '大模型API',
+      '工作流', 'Docker', 'Python', '向量检索', 'AI模型接口',
+      '大模型接口', 'Coze', 'Dify', 'Go', 'K8s', 'AI应用后端'
+    ],
+    workHigh: [
+      '接口开发', '后端服务开发', '模块开发', '系统开发', '数据库开发',
+      '功能实现', '服务联调', '问题排查', '性能优化', 'AI应用开发',
+      'RAG流程开发', 'Agent流程开发', '后端业务模块', '后端开发',
+      'Java后端开发', '系统架构设计', '高并发', '高负载', '高可用',
+      '微服务', '线上问题', 'Bug修复', '后端研发'
+    ],
+    workLow: [
+      '资料整理', '内容维护', '账号运营', '客户支持', '文档归档',
+      '数据标注', '简单配置', '平台操作', '售前方案', 'PPT'
+    ],
+    companyValue: [
+      '上市公司', '100-499人', '500-999人', '1000-9999人',
+      '技术团队', '研发中心', '软件研发部', '平台研发',
+      '汽车', '金融科技', '企业服务', '人工智能', '软件服务',
+      '字节跳动', '京东', '美团', '快手', '百度', '阿里', '腾讯',
+      '度小满', '顺丰', '中科曙光', '独角兽', '10000人以上'
+    ],
+    companyRisk: ['外包', '驻场', '客户现场', '实施交付'],
+    risk: [
+      '运营', '销售', '客服', '剪辑', '设计', '学科编辑', '纯标注',
+      '测试', '实施', '运维', '低代码', '驻场', '外派', '客户现场',
+      '6天/周', '12个月', '资料整理', '账号维护', '内容维护',
+      '售前', 'PPT', 'ERP', 'OA', '.NET/JAVA', 'JSP', 'Struts'
+    ],
+    frontend: ['全栈', 'React', 'Vue', 'Node', '前端']
+  };
+
+  const JOB_FIT_COLORS = {
+    优先投: '#16a34a',
+    可投: '#2563eb',
+    谨慎投: '#f97316',
+    不投: '#6b7280'
+  };
+
+  const DEFAULT_SCORING_CONFIG = {
+    targetRoles: JOB_FIT_KEYWORDS.strongDirections.concat(JOB_FIT_KEYWORDS.mediumDirections),
+    preferredCities: [],
+    positiveKeywords: JOB_FIT_KEYWORDS.javaStack.concat(JOB_FIT_KEYWORDS.aiStack).concat(JOB_FIT_KEYWORDS.workHigh),
+    negativeKeywords: JOB_FIT_KEYWORDS.risk,
+    hardRejectKeywords: ['电话销售', '纯测试', '驻场实施'],
+    scheduleRiskKeywords: ['6天/周', '7天/周', '12个月', '一年'],
+    roleWeights: {},
+    skillWeights: {},
+    riskWeights: {}
+  };
+
+  let activeScoringConfig = DEFAULT_SCORING_CONFIG;
+  let scoringConfigLoaded = false;
+  let scoringConfigSource = 'default';
+  let scoringConfigStatusText = '默认兜底';
+
+  let jobFitLastResult = null;
+  let jobFitLastKey = '';
+  let jobFitAiResult = null;
+  let jobFitAiError = '';
+  let jobFitAiLoading = false;
+  let jobFitHistoryRecords = [];
+  let jobFitHistoryLoading = false;
+  let jobFitHistoryError = '';
+  let jobFitHistoryKey = '';
+  let jobFitFeedbackSaving = false;
+  let jobFitFeedbackSaved = false;
+  let jobFitFeedbackError = '';
+  let jobFitFeedbackLastResponse = null;
+  let jobFitFeedbackDraft = {
+    applyStatus: '未投递',
+    chatStatus: '未沟通',
+    interviewStatus: '未约面',
+    feedbackNote: '',
+    rejectReason: ''
+  };
+  let jobFitTimer = null;
+  let jobFitCollapsed = false;
+
+  function normalizeConfigArray(value) {
+    if (!Array.isArray(value)) return [];
+    return value
+      .map(item => clean(String(item || '')))
+      .filter(Boolean)
+      .slice(0, 50);
+  }
+
+  function normalizeConfigWeights(value, min, max) {
+    const result = {};
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return result;
+
+    Object.keys(value).slice(0, 50).forEach(key => {
+      const cleanKey = clean(String(key || ''));
+      const weight = Number(value[key]);
+      if (!cleanKey || !Number.isFinite(weight)) return;
+      result[cleanKey] = Math.max(min, Math.min(max, Math.round(weight)));
+    });
+
+    return result;
+  }
+
+  function mergeUniqueArrays(base, extra) {
+    return Array.from(new Set([].concat(base || [], extra || []).map(item => clean(String(item || ''))).filter(Boolean)));
+  }
+
+  function mergeScoringConfig(defaultConfig, remoteConfig) {
+    const remoteTargetRoles = normalizeConfigArray(remoteConfig.targetRoles);
+    const remotePositiveKeywords = normalizeConfigArray(remoteConfig.positiveKeywords);
+    const remoteNegativeKeywords = normalizeConfigArray(remoteConfig.negativeKeywords);
+    const remoteHardRejectKeywords = normalizeConfigArray(remoteConfig.hardRejectKeywords);
+    const remoteScheduleRiskKeywords = normalizeConfigArray(remoteConfig.scheduleRiskKeywords);
+
+    return {
+      targetRoles: mergeUniqueArrays(defaultConfig.targetRoles, remoteTargetRoles),
+      preferredCities: mergeUniqueArrays(defaultConfig.preferredCities, normalizeConfigArray(remoteConfig.preferredCities)),
+      positiveKeywords: mergeUniqueArrays(defaultConfig.positiveKeywords, remotePositiveKeywords),
+      negativeKeywords: mergeUniqueArrays(defaultConfig.negativeKeywords, remoteNegativeKeywords),
+      hardRejectKeywords: mergeUniqueArrays(defaultConfig.hardRejectKeywords, remoteHardRejectKeywords),
+      scheduleRiskKeywords: mergeUniqueArrays(defaultConfig.scheduleRiskKeywords, remoteScheduleRiskKeywords),
+      roleWeights: Object.assign({}, defaultConfig.roleWeights || {}, normalizeConfigWeights(remoteConfig.roleWeights, 0, 50)),
+      skillWeights: Object.assign({}, defaultConfig.skillWeights || {}, normalizeConfigWeights(remoteConfig.skillWeights, 0, 20)),
+      riskWeights: Object.assign({}, defaultConfig.riskWeights || {}, normalizeConfigWeights(remoteConfig.riskWeights, -100, 0)),
+      supplementalTargetRoles: remoteTargetRoles,
+      supplementalPositiveKeywords: remotePositiveKeywords,
+      supplementalNegativeKeywords: remoteNegativeKeywords,
+      supplementalHardRejectKeywords: remoteHardRejectKeywords,
+      supplementalScheduleRiskKeywords: remoteScheduleRiskKeywords
+    };
+  }
+
+  function parseRemoteScoringConfig(response) {
+    if (!response || response.exists !== true || response.confirmed !== true || !response.configJson) {
+      throw new Error('scoring config is missing or not confirmed');
+    }
+
+    const config = typeof response.configJson === 'string'
+      ? JSON.parse(response.configJson)
+      : response.configJson;
+
+    if (!config || typeof config !== 'object') {
+      throw new Error('scoring config json is invalid');
+    }
+
+    ['targetRoles', 'preferredCities', 'positiveKeywords', 'negativeKeywords', 'hardRejectKeywords', 'scheduleRiskKeywords'].forEach(field => {
+      if (!Array.isArray(config[field])) throw new Error(`scoring config field ${field} must be an array`);
+    });
+    ['roleWeights', 'skillWeights', 'riskWeights'].forEach(field => {
+      if (!config[field] || typeof config[field] !== 'object' || Array.isArray(config[field])) {
+        throw new Error(`scoring config field ${field} must be an object`);
+      }
+    });
+
+    return config;
+  }
+
+  function loadScoringConfigFromBackend() {
+    return new Promise(resolve => {
+      if (typeof GM_xmlhttpRequest !== 'function') {
+        console.warn('[JobFitScoring] GM_xmlhttpRequest unavailable, using default scoring config.');
+        resolve(false);
+        return;
+      }
+
+      GM_xmlhttpRequest({
+        method: 'GET',
+        url: 'http://localhost:8080/api/profile/scoring-config',
+        timeout: 5000,
+        onload: response => {
+          try {
+            if (response.status < 200 || response.status >= 300) {
+              throw new Error(`HTTP ${response.status}`);
+            }
+            const body = JSON.parse(response.responseText || '{}');
+            const remoteConfig = parseRemoteScoringConfig(body);
+            activeScoringConfig = mergeScoringConfig(DEFAULT_SCORING_CONFIG, remoteConfig);
+            scoringConfigLoaded = true;
+            scoringConfigSource = 'backend';
+            scoringConfigStatusText = '后端用户画像';
+            console.info('[JobFitScoring] Scoring config loaded from backend user profile.');
+            resolve(true);
+          } catch (e) {
+            activeScoringConfig = DEFAULT_SCORING_CONFIG;
+            scoringConfigLoaded = false;
+            scoringConfigSource = 'default';
+            scoringConfigStatusText = '默认兜底';
+            console.warn('[JobFitScoring] Failed to load backend scoring config, using default config.', e);
+            resolve(false);
+          }
+        },
+        onerror: () => {
+          activeScoringConfig = DEFAULT_SCORING_CONFIG;
+          scoringConfigLoaded = false;
+          scoringConfigSource = 'default';
+          scoringConfigStatusText = '默认兜底';
+          console.warn('[JobFitScoring] Backend scoring config request failed, using default config.');
+          resolve(false);
+        },
+        ontimeout: () => {
+          activeScoringConfig = DEFAULT_SCORING_CONFIG;
+          scoringConfigLoaded = false;
+          scoringConfigSource = 'default';
+          scoringConfigStatusText = '默认兜底';
+          console.warn('[JobFitScoring] Backend scoring config request timed out, using default config.');
+          resolve(false);
+        }
+      });
+    });
+  }
+
+  function getVisibleJobText() {
+    return clean(document.body ? document.body.innerText : '');
+  }
+
+  function findJobDetailContainer() {
+    const detailHints = ['职位描述', '岗位职责', '任职要求', '工作地址', '立即沟通', '收藏'];
+    const fieldHints = [
+      /(\d{2,4}-\d{2,4}元\/天|\d{1,3}-\d{1,3}K|\d{1,3}K)/,
+      /(经验|在校|应届|不限|1年以内|1-3年|3-5年|5-10年)/,
+      /(本科|硕士|大专|学历不限)/,
+      /(北京|天津|上海|深圳|广州|杭州|成都|武汉|西安)/,
+      /(职位描述|岗位职责|任职要求)/,
+      /工作地址/
+    ];
+
+    const candidates = Array.from(document.querySelectorAll('main, section, article, div'))
+      .map(el => {
+        const rect = el.getBoundingClientRect();
+        const text = clean(el.innerText);
+        if (!text || text.length < 120) return null;
+        if (rect.width < 260 || rect.height < 220) return null;
+        if (rect.right < window.innerWidth * 0.38) return null;
+
+        const detailScore = detailHints.reduce((sum, hint) => sum + (text.includes(hint) ? 1 : 0), 0);
+        const fieldScore = fieldHints.reduce((sum, re) => sum + (re.test(text) ? 1 : 0), 0);
+        const salaryCount = (text.match(/(\d{2,4}-\d{2,4}元\/天|\d{1,3}-\d{1,3}K|\d{1,3}K)/g) || []).length;
+        const hasDescription = /(职位描述|岗位职责|任职要求)/.test(text);
+        const hasAddress = text.includes('工作地址');
+
+        // 左侧列表通常会有多个薪资和岗位标题，但缺少完整描述与地址。
+        if (salaryCount >= 4 && !hasDescription && !hasAddress) return null;
+        if (detailScore < 2 && fieldScore < 4) return null;
+
+        const score =
+          detailScore * 20 +
+          fieldScore * 10 +
+          (hasDescription ? 25 : 0) +
+          (hasAddress ? 20 : 0) +
+          Math.min(text.length / 120, 20) +
+          (rect.left > window.innerWidth * 0.35 ? 12 : 0);
+
+        return { el, text, score };
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.score - a.score);
+
+    return candidates.length ? candidates[0].el : null;
+  }
+
+  function firstMatch(text, patterns) {
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (match) return clean(match[1] || match[0]);
+    }
+    return '';
+  }
+
+  const JOB_CITY_PATTERN = /(北京|天津|上海|深圳|广州|杭州|成都|武汉|西安|南京|苏州|重庆|长沙|郑州|青岛|厦门|合肥|宁波|佛山|东莞|无锡|济南|大连|沈阳|长春|哈尔滨|福州|南昌|昆明|贵阳|南宁|太原|石家庄|呼和浩特|乌鲁木齐|兰州|银川|西宁|海口)/;
+
+  function parseSalary(text) {
+    const normalized = clean(text).replace(/\s+/g, '');
+    const day = normalized.match(/(\d{2,4})(?:-(\d{2,4}))?元\/天/);
+    if (day) {
+      return {
+        raw: day[0],
+        type: 'daily',
+        low: Number(day[1]),
+        high: Number(day[2] || day[1])
+      };
+    }
+
+    const monthly = normalized.match(/(\d{1,3})(?:-(\d{1,3}))?K(?:·\d+薪|\/月)?/);
+    if (monthly) {
+      return {
+        raw: monthly[0],
+        type: 'monthly',
+        low: Number(monthly[1]),
+        high: Number(monthly[2] || monthly[1])
+      };
+    }
+
+    return { raw: '', type: '', low: 0, high: 0 };
+  }
+
+  function isLikelySalaryText(text) {
+    const value = clean(text);
+    if (!value) return false;
+    return /(?:\d{2,4}\s*-\s*\d{2,4}\s*元\s*\/\s*天|\d{1,3}\s*-\s*\d{1,3}\s*K(?:\s*·\s*\d+\s*薪|\s*\/\s*月)?)/i.test(value);
+  }
+
+  function getElementOwnText(el) {
+    if (!el || !el.childNodes) return '';
+
+    return clean(Array.from(el.childNodes)
+      .filter(node => node.nodeType === Node.TEXT_NODE)
+      .map(node => node.nodeValue || '')
+      .join(' '));
+  }
+
+  function isVisibleElement(el) {
+    if (!el) return false;
+    if (el.nodeType === Node.TEXT_NODE) {
+      return isVisibleElement(el.parentElement);
+    }
+    if (!el.getBoundingClientRect) return true;
+
+    const style = window.getComputedStyle ? window.getComputedStyle(el) : null;
+    if (style && (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0)) {
+      return false;
+    }
+
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  function findVisibleTextNodes(container) {
+    if (!container) return [];
+
+    const result = [];
+    const walker = document.createTreeWalker(
+        container,
+        NodeFilter.SHOW_TEXT,
+        {
+          acceptNode(node) {
+            const text = clean(node.nodeValue);
+            if (!text || !isVisibleElement(node.parentElement)) {
+              return NodeFilter.FILTER_REJECT;
+            }
+            return NodeFilter.FILTER_ACCEPT;
+          }
+        }
+    );
+
+    let node = walker.nextNode();
+    while (node) {
+      result.push({
+        node,
+        parent: node.parentElement,
+        text: clean(node.nodeValue)
+      });
+      node = walker.nextNode();
+    }
+
+    return result;
+  }
+
+  function collectVisibleSalaryCandidates() {
+    if (!document.body) return [];
+
+    return Array.from(document.body.querySelectorAll('*'))
+      .filter(isVisibleElement)
+      .map(el => {
+        const ownText = getElementOwnText(el);
+        const fallbackText = ownText ? '' : clean(el.textContent || '');
+        const text = ownText || (fallbackText.length <= 40 ? fallbackText : '');
+        if (!isLikelySalaryText(text)) return null;
+
+        return {
+          text,
+          el,
+          rect: el.getBoundingClientRect()
+        };
+      })
+      .filter(Boolean);
+  }
+
+  function isSearchConditionText(text) {
+    const value = clean(text);
+    if (!value) return true;
+    if (/搜索职位|搜索公司|推荐|筛选|职位类型|工作地点|薪资待遇|经验要求/.test(value)) return true;
+    if (/^(Java|java|AI|后端|前端|测试|产品|运营)[(（]?[^\s()（）]{2,8}[)）]?$/.test(value) && JOB_CITY_PATTERN.test(value)) return true;
+    if (/^(Java|java|AI|后端|前端|测试|产品|运营)$/.test(value)) return true;
+    return false;
+  }
+
+  function cleanJobTitle(title) {
+    let value = String(title || '')
+      .replace(/^(岗位标题|职位名称|职位)[:：]\s*/, '')
+      .replace(/\s*(收藏|立即沟通).*$/, '')
+      .trim();
+
+    const salaryMatch = value.match(/\d{2,4}\s*-\s*\d{2,4}\s*元\/天|\d{1,3}\s*-\s*\d{1,3}\s*K(?:·\d+薪|\/月)?/);
+    if (salaryMatch && salaryMatch.index > 0) {
+      value = value.slice(0, salaryMatch.index).trim();
+    }
+
+    const metaMatch = value.match(new RegExp(`\\s+${JOB_CITY_PATTERN.source}\\s+(?:每周\\s*\\d|\\d(?:-\\d)?\\s*天\\/周|\\d+\\s*个月|本科|大专|硕士|博士)`));
+    if (metaMatch && metaMatch.index > 0) {
+      value = value.slice(0, metaMatch.index).trim();
+    }
+
+    return clean(value)
+      .replace(/[|｜]+$/, '')
+      .trim();
+  }
+
+  function isValidJobTitle(title) {
+    const value = cleanJobTitle(title);
+    if (!value || value.length < 4 || value.length > 80) return false;
+    if (isSearchConditionText(value)) return false;
+    if (isLikelyJdSentence(value)) return false;
+    if (/^\d{2,4}-\d{2,4}元\/天$/.test(value)) return false;
+    if (/^\d{1,3}-\d{1,3}K/.test(value)) return false;
+    if (/^(北京|天津|上海|深圳|广州|杭州|成都|武汉|西安)\s/.test(value)) return false;
+    return /(Java|java|后端|服务端|AI|Agent|RAG|大模型|全栈|软件|研发|开发|工程师|实习|客户端|\.NET|C#|GIS|算法)/.test(value);
+  }
+
+  function isLikelyJdSentence(value) {
+    const text = clean(value);
+    if (!text) return false;
+    if (text.length > 60) return true;
+    return /(岗位职责|职位描述|任职要求|负责|参与|熟悉|经验|接口开发|数据处理|问题排查|缺陷修复|功能迭代|系统设计|工作内容|任职资格|优先考虑)/.test(text);
+  }
+
+  function cleanCompanyName(value) {
+    return clean(value)
+      .replace(/^(公司|公司名称|企业名称)[:：]\s*/, '')
+      .replace(/\s*(招聘者|HR|人事|在招职位).*$/, '')
+      .replace(/\s*(已上市|未融资|不需要融资|融资未公开|天使轮|A轮|B轮|C轮).*$/, '')
+      .trim();
+  }
+
+  function isValidCompanyName(value) {
+    const text = cleanCompanyName(value);
+    if (!text || text.length < 2 || text.length > 40) return false;
+    if (isLikelyJdSentence(text)) return false;
+    if (isValidJobTitle(text)) return false;
+    if (isLikelySalaryText(text)) return false;
+    if (/^(未识别|暂无|职位|岗位|学历|经验|薪资|地址|工作地址|立即沟通|收藏)$/.test(text)) return false;
+    if (/(天\/周|个月|本科|硕士|博士|经验不限|Java|后端开发|服务端开发|实习生)$/.test(text)) return false;
+    return /(公司|集团|科技|信息|智能|网络|软件|数据|技术|教育|咨询|银行|金融|汽车|电子|通信|互联|有限|股份|中心|研究院|字节跳动|京东|美团|快手|百度|阿里|腾讯|小米|网易|滴滴|蚂蚁|华为|抖音|小红书|携程|顺丰|联想|用友|金山|搜狐|新浪)/.test(text);
+  }
+
+  function isCompanyContextText(text) {
+    return /(公司介绍|公司信息|工商信息|企业信息|融资|已上市|未融资|不需要融资|在招职位|招聘者|HR|人事|B轮|C轮|D轮|100-499人|500-999人|1000-9999人|10000人以上)/.test(clean(text));
+  }
+
+  function extractCompanyCandidateFromText(text) {
+    const value = cleanCompanyName(text);
+    if (isValidCompanyName(value)) return value;
+
+    const match = value.match(/([\u4e00-\u9fa5A-Za-z0-9（）()·\-]{2,30}(?:公司|集团|科技|信息|智能|网络|软件|数据|技术|教育|咨询|银行|金融|汽车|电子|通信|互联|有限|股份|中心|研究院))/);
+    if (match && isValidCompanyName(match[1])) return match[1];
+    return '';
+  }
+
+  function collectCompanyCandidatesFromElements(elements, source) {
+    const candidates = [];
+
+    elements.forEach(node => {
+      if (!node) return;
+      const context = getElementText(node.parentElement || node);
+      const texts = [
+        getElementOwnText(node),
+        node.getAttribute && node.getAttribute('title') || '',
+        ...getElementText(node).split('\n').slice(0, 8)
+      ];
+
+      texts.forEach(text => {
+        const direct = extractCompanyCandidateFromText(text);
+        if (direct) {
+          candidates.push({ value: direct, source });
+          return;
+        }
+
+        const compact = cleanCompanyName(text);
+        if (
+          compact.length >= 2 &&
+          compact.length <= 24 &&
+          isCompanyContextText(context) &&
+          !isLikelyJdSentence(compact) &&
+          !isValidJobTitle(compact) &&
+          !isLikelySalaryText(compact) &&
+          !/(天\/周|个月|本科|硕士|博士|职位|岗位|职责|要求|立即沟通|收藏)/.test(compact)
+        ) {
+          candidates.push({ value: compact, source });
+        }
+      });
+    });
+
+    return candidates;
+  }
+
+  function extractCompanyNameByGeometry(container) {
+    if (!container || !document.body || !container.getBoundingClientRect) {
+      return { value: '', source: 'unresolved' };
+    }
+
+    const rect = container.getBoundingClientRect();
+    const candidates = Array.from(document.body.querySelectorAll('*'))
+      .filter(isVisibleElement)
+      .filter(el => {
+        const elRect = el.getBoundingClientRect();
+        return elRect.left >= rect.left - 40 &&
+          elRect.right <= rect.right + 460 &&
+          elRect.top >= rect.top - 120 &&
+          elRect.top <= rect.bottom + 520;
+      });
+
+    const companyCandidates = collectCompanyCandidatesFromElements(candidates, 'right-geometry-company');
+    return companyCandidates.length ? companyCandidates[0] : { value: '', source: 'unresolved' };
+  }
+
+  function getElementText(el) {
+    return clean(el ? (el.innerText || el.textContent || '') : '');
+  }
+
+  function findJobHeaderBlock(container) {
+    if (!container) return null;
+
+    const titleSelectors = [
+      'h1',
+      'h2',
+      '[class*="job-name"]',
+      '[class*="jobName"]',
+      '[class*="position"]',
+      '[class*="name"]',
+      '[title]'
+    ];
+    const titleNode = findJobTitleElement(container);
+
+    if (titleNode) {
+      let block = titleNode;
+      for (let i = 0; i < 4 && block.parentElement && block.parentElement !== container; i += 1) {
+        const parentText = getElementText(block.parentElement);
+        if (parentText.length > 40 && parentText.length < 1200 && parseSalary(parentText).raw) {
+          return block.parentElement;
+        }
+        block = block.parentElement;
+      }
+      return titleNode.parentElement || titleNode;
+    }
+
+    const blocks = Array.from(container.querySelectorAll('section, article, div'))
+      .map(el => ({ el, text: getElementText(el) }))
+      .filter(item =>
+        item.text.length >= 30 &&
+        item.text.length <= 1200 &&
+        parseSalary(item.text).raw &&
+        /(天\/周|每周|个月|本科|大专|硕士|博士|学历不限)/.test(item.text) &&
+        !/(职位描述|岗位职责|任职要求).{200,}/.test(item.text)
+      )
+      .sort((a, b) => a.text.length - b.text.length);
+
+    return blocks.length ? blocks[0].el : container;
+  }
+
+  function findJobTitleElement(container) {
+    if (!container) return null;
+
+    const titleSelectors = [
+      'h1',
+      'h2',
+      '[class*="job-name"]',
+      '[class*="jobName"]',
+      '[class*="position"]',
+      '[class*="name"]',
+      '[title]'
+    ];
+    const nodes = Array.from(container.querySelectorAll(titleSelectors.join(',')));
+
+    return nodes.find(node =>
+      isValidJobTitle(getElementOwnText(node)) ||
+      isValidJobTitle(getElementText(node)) ||
+      isValidJobTitle(node.getAttribute('title'))
+    ) || null;
+  }
+
+  function extractJobTitleFromHeader(container) {
+    const header = findJobHeaderBlock(container);
+    const sources = [];
+
+    if (header) {
+      const nodes = Array.from(header.querySelectorAll('h1,h2,[class*="job-name"],[class*="jobName"],[class*="position"],[class*="name"],[title]'));
+      for (const node of nodes) {
+        sources.push(getElementText(node) || node.getAttribute('title') || '');
+      }
+      sources.push(...getElementText(header).split('\n'));
+    }
+
+    if (container) {
+      sources.push(...getElementText(container).split('\n').slice(0, 20));
+    }
+
+    for (const source of sources) {
+      const title = cleanJobTitle(source);
+      if (isValidJobTitle(title)) {
+        return { value: title, source: header ? 'header-title' : 'detail-lines' };
+      }
+    }
+
+    return { value: '', source: 'unresolved' };
+  }
+
+  function extractCompanyNameFromDetail(container) {
+    if (!container) return { value: '', source: 'unresolved' };
+
+    const candidateSelectors = [
+      '[class*="company"]',
+      '[class*="brand"]',
+      '[class*="boss"]',
+      '[class*="recruiter"]',
+      '[class*="job-boss"]',
+      '[class*="sider"]',
+      '[class*="business"]'
+    ];
+
+    const selectorCandidates = collectCompanyCandidatesFromElements(
+      Array.from(container.querySelectorAll(candidateSelectors.join(','))),
+      'company-card'
+    );
+
+    if (selectorCandidates.length) {
+      return selectorCandidates[0];
+    }
+
+    const header = findJobHeaderBlock(container);
+    const headerCandidates = getElementText(header)
+      .split('\n')
+      .map(extractCompanyCandidateFromText)
+      .filter(Boolean);
+    if (headerCandidates.length) {
+      return { value: headerCandidates[0], source: 'header-company' };
+    }
+
+    const beforeJdText = getElementText(container).split(/职位描述|岗位职责|任职要求|工作内容/)[0] || '';
+    const lineCandidates = beforeJdText
+      .split('\n')
+      .map(extractCompanyCandidateFromText)
+      .filter(Boolean);
+    if (lineCandidates.length) {
+      return { value: lineCandidates[0], source: 'detail-company-lines' };
+    }
+
+    const geometryCandidate = extractCompanyNameByGeometry(container);
+    if (geometryCandidate.value) {
+      return geometryCandidate;
+    }
+
+    return { value: '', source: 'unresolved' };
+  }
+
+  function extractSalaryFromHeader(container) {
+    const header = findJobHeaderBlock(container);
+    const titleElement = findJobTitleElement(container);
+    const headerTextNodes = findVisibleTextNodes(header);
+    const exactHeaderNode = headerTextNodes.find(item => isLikelySalaryText(item.text) && clean(item.text) === parseSalary(item.text).raw);
+    if (exactHeaderNode) return { value: parseSalary(exactHeaderNode.text), source: 'header-salary-node' };
+
+    const anyHeaderNode = headerTextNodes.find(item => isLikelySalaryText(item.text));
+    if (anyHeaderNode) return { value: parseSalary(anyHeaderNode.text), source: 'header-salary-node' };
+
+    const headerSalaryElement = header ? Array.from(header.querySelectorAll('*'))
+      .filter(isVisibleElement)
+      .map(el => getElementOwnText(el) || (clean(el.textContent || '').length <= 40 ? clean(el.textContent || '') : ''))
+      .find(isLikelySalaryText) : '';
+    if (headerSalaryElement) return { value: parseSalary(headerSalaryElement), source: 'header-salary-node' };
+
+    const nearbyTexts = [];
+    if (header) {
+      nearbyTexts.push(getElementText(header));
+      if (header.parentElement) nearbyTexts.push(getElementText(header.parentElement));
+    }
+
+    for (const text of nearbyTexts) {
+      const salary = parseSalary(text);
+      if (salary.raw) return { value: salary, source: 'header-nearby-text' };
+    }
+
+    const geometrySalary = extractSalaryByGeometry(container, titleElement);
+    if (geometrySalary.value.raw) {
+      return geometrySalary;
+    }
+
+    const topText = getElementText(container).slice(0, 1000);
+    const topSalary = parseSalary(topText);
+    if (topSalary.raw) {
+      return { value: topSalary, source: 'detail-container-text' };
+    }
+
+    return { value: parseSalary(''), source: 'unresolved' };
+  }
+
+  function extractSalaryByGeometry(detailContainer, titleElement) {
+    if (!detailContainer || !detailContainer.getBoundingClientRect) {
+      return { value: parseSalary(''), source: 'unresolved' };
+    }
+
+    const detailRect = detailContainer.getBoundingClientRect();
+    const titleRect = titleElement && titleElement.getBoundingClientRect ? titleElement.getBoundingClientRect() : null;
+    const candidates = collectVisibleSalaryCandidates()
+      .filter(candidate =>
+        candidate.rect.left >= detailRect.left - 20 &&
+        candidate.rect.right <= detailRect.right + 20 &&
+        candidate.rect.top >= detailRect.top - 20 &&
+        candidate.rect.top <= detailRect.top + 180
+      )
+      .sort((a, b) => {
+        const aDistance = titleRect ? Math.abs(a.rect.top - titleRect.top) : Math.abs(a.rect.top - detailRect.top);
+        const bDistance = titleRect ? Math.abs(b.rect.top - titleRect.top) : Math.abs(b.rect.top - detailRect.top);
+        if (aDistance !== bDistance) return aDistance - bDistance;
+        return a.rect.left - b.rect.left;
+      });
+
+    if (!candidates.length) {
+      return { value: parseSalary(''), source: 'unresolved' };
+    }
+
+    return {
+      value: parseSalary(candidates[0].text),
+      source: 'geometry-header-nearby'
+    };
+  }
+
+  function extractCityFromMetaLine(container) {
+    const header = findJobHeaderBlock(container);
+    const headerLines = getElementText(header).split(/职位描述|岗位职责|任职要求|工作地址|\n/).map(line => clean(line)).filter(Boolean);
+    const detailLines = getElementText(container).split(/职位描述|岗位职责|任职要求|\n/).map(line => clean(line)).filter(Boolean);
+    const candidateLines = headerLines.concat(detailLines.slice(0, 25));
+
+    for (const line of candidateLines) {
+      if (/工作地址|地址|地图/.test(line)) continue;
+      if (!/(天\/周|每周|个月|本科|大专|硕士|博士|学历不限|经验不限|在校|应届)/.test(line)) continue;
+      const city = firstMatch(line, [JOB_CITY_PATTERN]);
+      if (city) return { value: city, source: 'meta-line' };
+    }
+
+    for (const line of detailLines) {
+      if (!/工作地址|地址/.test(line)) continue;
+      const city = firstMatch(line, [JOB_CITY_PATTERN]);
+      if (city) return { value: city, source: 'address-fallback' };
+    }
+
+    return { value: '', source: 'unresolved' };
+  }
+
+  function parseExperience(text) {
+    return firstMatch(text, [
+      /(经验不限)/,
+      /(在校\/应届|在校|应届)/,
+      /(\d+\s*年以内)/,
+      /(\d+\s*-\s*\d+\s*年)/,
+      /(\d+\s*年以上)/
+    ]);
+  }
+
+  function parseEducation(text) {
+    return firstMatch(text, [/(学历不限)/, /(大专)/, /(本科)/, /(硕士)/, /(博士)/]);
+  }
+
+  function parseScheduleAndDuration(text) {
+    const lines = String(text || '').split('\n').map(line => clean(line)).filter(Boolean);
+    const preferredScheduleLine = lines.find(line =>
+      /(出勤|每周|天\/周)/.test(line) && /(每周\s*\d(?:-\d)?\s*天|\d(?:-\d)?\s*天\/周|6\s*天\/周)/.test(line)
+    );
+    const preferredDurationLine = lines.find(line =>
+      /(周期|时长|至少|个月|一年|1\s*年)/.test(line) && /(\d+\s*个月以上|至少\s*\d+\s*个月|\d+\s*个月|一年|1\s*年)/.test(line)
+    );
+
+    const scheduleSource = preferredScheduleLine || text;
+    const durationSource = preferredDurationLine || text;
+    const schedule = firstMatch(scheduleSource, [
+      /(每周\s*\d(?:-\d)?\s*天)/,
+      /(\d(?:-\d)?\s*天\/周)/,
+      /(6\s*天\/周)/
+    ]);
+    const duration = firstMatch(durationSource, [
+      /(\d+\s*个月以上)/,
+      /(至少\s*\d+\s*个月)/,
+      /(\d+\s*个月)/,
+      /(一年)/,
+      /(1\s*年)/
+    ]);
+
+    return { schedule, duration };
+  }
+
+  function extractTags(text) {
+    const knownTags = []
+      .concat(JOB_FIT_KEYWORDS.javaStack)
+      .concat(JOB_FIT_KEYWORDS.aiStack)
+      .concat(JOB_FIT_KEYWORDS.frontend)
+      .concat(['监管报送', '信息披露', '银行理财', 'Oracle', 'vue', 'Vue', '资管']);
+
+    return uniqueMatches(text, knownTags);
+  }
+
+  function extractJobInfoFromDetail(container) {
+    const sourceType = container ? 'detail-panel' : 'fallback-body';
+    const rawText = container ? (container.innerText || '') : getVisibleJobText();
+    const text = clean(rawText);
+    const lines = rawText.split('\n').map(line => clean(line)).filter(Boolean);
+    const titleInfo = extractJobTitleFromHeader(container);
+    const companyInfo = extractCompanyNameFromDetail(container);
+    const salaryExtract = extractSalaryFromHeader(container);
+    const cityInfo = extractCityFromMetaLine(container);
+    const salaryInfo = salaryExtract.value.raw ? salaryExtract.value : parseSalary(text);
+    const scheduleInfo = parseScheduleAndDuration(text);
+    const titleLineRaw = lines.find(line =>
+      /岗位标题|职位名称/.test(line)
+    ) || lines.find(line =>
+      line.length <= 50 && isValidJobTitle(line)
+    ) || '';
+    const titleLine = titleLineRaw.replace(/^(岗位标题|职位名称)[:：]\s*/, '');
+
+    return {
+      jobTitle: titleInfo.value || cleanJobTitle(titleLine),
+      salary: salaryInfo.raw,
+      salaryInfo,
+      city: cityInfo.value || getCity(text),
+      experience: parseExperience(text),
+      education: parseEducation(text),
+      schedule: scheduleInfo.schedule,
+      duration: scheduleInfo.duration,
+      companyName: companyInfo.value || '',
+      companySize: firstMatch(text, [/(0-20人|20-99人|100-499人|500-999人|1000-9999人|10000人以上|10000\+人?)/]),
+      address: firstMatch(text, [/工作地址\s*([^\n]{2,80})/, /(天津[^\n]{0,50})/, /(北京[^\n]{0,50})/]),
+      tags: extractTags(text),
+      jdText: text,
+      sourceType,
+      titleSource: titleInfo.value ? titleInfo.source : (titleLine ? 'detail-lines' : 'unresolved'),
+      companyNameSource: companyInfo.source,
+      salarySource: salaryInfo.raw ? salaryExtract.source : 'unresolved',
+      citySource: cityInfo.value ? cityInfo.source : 'text-fallback'
+    };
+  }
+
+  function uniqueMatches(text, keywords) {
+    const lower = text.toLowerCase();
+    const seen = new Set();
+
+    for (const keyword of (keywords || [])) {
+      if (lower.includes(keyword.toLowerCase())) {
+        seen.add(keyword);
+      }
+    }
+
+    return Array.from(seen);
+  }
+
+  function detectMatchedKeywords(text) {
+    return {
+      java: uniqueMatches(text, JOB_FIT_KEYWORDS.javaStack),
+      ai: uniqueMatches(text, JOB_FIT_KEYWORDS.aiStack),
+      backend: uniqueMatches(text, ['后端', '服务端', '接口开发', '后端接口', '系统开发', '模块开发']),
+      work: uniqueMatches(text, JOB_FIT_KEYWORDS.workHigh),
+      profile: uniqueMatches(text, activeScoringConfig.positiveKeywords)
+    };
+  }
+
+  function detectRiskFlags(text) {
+    let flags = uniqueMatches(text, mergeUniqueArrays(JOB_FIT_KEYWORDS.risk, activeScoringConfig.negativeKeywords));
+
+    if (flags.includes('销售') && !/(销售实习生|销售专员|电话销售|客户销售|销售岗位|销售岗)/.test(text)) {
+      flags = flags.filter(flag => flag !== '销售');
+    }
+
+    if (flags.includes('销售') && /(销售系统|销售数据|销售平台|公司业务销售)/.test(text)) {
+      flags = flags.filter(flag => flag !== '销售');
+    }
+
+    if (flags.includes('客服') && !/(客服实习生|客服专员|在线客服|客服岗|客服岗位)/.test(text)) {
+      flags = flags.filter(flag => flag !== '客服');
+    }
+
+    if (flags.includes('客服') && /(智能客服系统|客服平台|客户服务系统|客户问题|客户需求|客户支持平台)/.test(text)) {
+      flags = flags.filter(flag => flag !== '客服');
+    }
+
+    if (flags.includes('运营') && !/(运营实习生|产品运营|内容运营|用户运营|新媒体运营|账号运营|运营专员|运营岗)/.test(text)) {
+      flags = flags.filter(flag => flag !== '运营');
+    }
+
+    if (flags.includes('运营') && /(运营产品|核心运营产品|电商运营系统|运营平台|运营管理系统|运营后台|业务运营系统)/.test(text)) {
+      flags = flags.filter(flag => flag !== '运营');
+    }
+
+    if (flags.includes('设计') && !/(平面设计|UI设计|视觉设计|设计师|美工设计)/.test(text)) {
+      flags = flags.filter(flag => flag !== '设计');
+    }
+
+    if (flags.includes('设计') && /(系统设计|架构设计|数据库设计|接口设计|详细设计|概要设计|高可用系统设计|技术方案设计|模块设计|设计模式)/.test(text)) {
+      flags = flags.filter(flag => flag !== '设计');
+    }
+
+    if (flags.includes('测试') && !/(测试实习生|软件测试|功能测试岗|测试工程师岗位|测试专员)/.test(text)) {
+      flags = flags.filter(flag => flag !== '测试');
+    }
+
+    if (flags.includes('测试') && /(单元测试|联调测试|测试用例|Bug修复|协助测试工程师|测试和文档编写|保证交付质量)/i.test(text)) {
+      flags = flags.filter(flag => flag !== '测试');
+    }
+
+    if (flags.includes('ERP') && !/(ERP|OA).{0,20}(实施|客户现场|驻场|二开|管理系统)|(实施|客户现场|驻场|二开).{0,20}(ERP|OA)/.test(text)) {
+      flags = flags.filter(flag => flag !== 'ERP');
+    }
+
+    if (flags.includes('实施') && !/(实施交付|实施工程师|实施顾问|驻场实施|客户现场|ERP.{0,20}实施|OA.{0,20}实施)/.test(text)) {
+      flags = flags.filter(flag => flag !== '实施');
+    }
+
+    if (flags.includes('售前') && !/(售前顾问|售前工程师|售前方案|售前支持|方案售前)/.test(text)) {
+      flags = flags.filter(flag => flag !== '售前');
+    }
+
+    if (flags.includes('售前') && /(技术方案论证|需求分析|和产品\/业务沟通|参与方案设计)/.test(text)) {
+      flags = flags.filter(flag => flag !== '售前');
+    }
+
+    const hasDevStack = /(AI应用|Java|Spring|SpringBoot|Spring Boot|SpringCloud|MyBatis|MySQL|Redis|Docker|微服务|API开发|后端|接口|模块开发|系统开发)/i.test(text);
+    if (hasDevStack) {
+      flags = flags.filter(flag => !['资料整理', '内容维护', '文档归档', '客服', '售前'].includes(flag));
+    }
+
+    flags = mergeUniqueArrays(flags, uniqueMatches(text, activeScoringConfig.hardRejectKeywords));
+    flags = mergeUniqueArrays(flags, uniqueMatches(text, activeScoringConfig.scheduleRiskKeywords));
+
+    return flags;
+  }
+
+  function scoreKeywordGroup(matches, weights, cap) {
+    let score = 0;
+    for (const match of matches) {
+      score += weights[match] || 4;
+    }
+    return Math.min(score, cap);
+  }
+
+  function scoreDirection(text) {
+    const configuredRoles = uniqueMatches(text, activeScoringConfig.targetRoles);
+    const weightedRoles = configuredRoles.filter(role => Object.prototype.hasOwnProperty.call(activeScoringConfig.roleWeights, role));
+    if (weightedRoles.length) {
+      const maxWeight = weightedRoles.reduce((max, role) => Math.max(max, activeScoringConfig.roleWeights[role] || 0), 0);
+      return Math.min(20, Math.max(12, maxWeight));
+    }
+    if (uniqueMatches(text, JOB_FIT_KEYWORDS.strongDirections).length) return 20;
+    if (uniqueMatches(text, JOB_FIT_KEYWORDS.mediumDirections).length) return 12;
+    return 0;
+  }
+
+  function scoreActiveScoringConfig(text) {
+    const weightedSkillKeywords = Object.keys(activeScoringConfig.skillWeights || {});
+    const weightedRiskKeywords = Object.keys(activeScoringConfig.riskWeights || {});
+    const weightedRoleKeywords = Object.keys(activeScoringConfig.roleWeights || {});
+    const positiveMatches = mergeUniqueArrays(
+      uniqueMatches(text, activeScoringConfig.supplementalPositiveKeywords || []),
+      uniqueMatches(text, weightedSkillKeywords)
+    );
+    const negativeMatches = mergeUniqueArrays(
+      uniqueMatches(text, activeScoringConfig.supplementalNegativeKeywords || []),
+      uniqueMatches(text, weightedRiskKeywords)
+    );
+    const roleMatches = mergeUniqueArrays(
+      uniqueMatches(text, activeScoringConfig.supplementalTargetRoles || []),
+      uniqueMatches(text, weightedRoleKeywords)
+    );
+    const hardRejectMatches = uniqueMatches(text, activeScoringConfig.supplementalHardRejectKeywords || []);
+
+    const skillScore = positiveMatches.reduce((sum, keyword) => {
+      if (Object.prototype.hasOwnProperty.call(activeScoringConfig.skillWeights, keyword)) {
+        return sum + activeScoringConfig.skillWeights[keyword];
+      }
+      return scoringConfigSource === 'backend' ? sum + 1 : sum;
+    }, 0);
+    const roleScore = roleMatches
+      .reduce((sum, keyword) => sum + (activeScoringConfig.roleWeights[keyword] || 0), 0);
+    const riskPenalty = negativeMatches.reduce((sum, keyword) => {
+      if (Object.prototype.hasOwnProperty.call(activeScoringConfig.riskWeights, keyword)) {
+        return sum + activeScoringConfig.riskWeights[keyword];
+      }
+      return 0;
+    }, 0);
+
+    return {
+      score: Math.max(-12, Math.min(18, Math.min(skillScore, 12) + Math.min(roleScore, 8) + Math.max(riskPenalty, -8))),
+      positiveMatches,
+      negativeMatches,
+      hardRejectMatches
+    };
+  }
+
+  function scoreJavaStack(text, matched) {
+    const hasJava = matched.java.some(x => /^Java$/i.test(x) || x.includes('Java'));
+    const hasSpring = matched.java.some(x => /Spring/i.test(x));
+    const hasMySQL = matched.java.some(x => /MySQL/i.test(x));
+    const hasRedis = matched.java.some(x => /Redis/i.test(x));
+    const hasMyBatis = matched.java.some(x => /MyBatis/i.test(x));
+
+    if (hasJava && hasSpring && hasMySQL && (hasRedis || hasMyBatis)) return 25;
+
+    return scoreKeywordGroup(matched.java, {
+      'Java': 5,
+      'Spring': 5,
+      'Spring Boot': 5,
+      'SpringCloud': 4,
+      'Spring Cloud': 4,
+      'MySQL': 4,
+      'Redis': 4,
+      'MyBatis': 4,
+      'MyBatis-Plus': 4,
+      'SpringMVC': 3,
+      'Dubbo': 3,
+      'RabbitMQ': 4,
+      'Kafka': 4,
+      'MQ': 4,
+      '后端接口': 4,
+      '数据库设计': 4,
+      '缓存': 3
+    }, 25);
+  }
+
+  function scoreAiStack(text, matched) {
+    const highAi = /(Agent|智能体|RAG|大模型API|大模型接口|AI模型接口|LLM|Coze|Dify)/i.test(text);
+    const backendLang = /(后端接口|后端服务|接口开发|Java|Go|Python|Docker|微服务)/i.test(text);
+
+    if (highAi && backendLang) {
+      return Math.min(25, 20 + Math.min(matched.ai.length, 5));
+    }
+
+    return scoreKeywordGroup(matched.ai, {
+      'AI应用': 5,
+      '大模型': 5,
+      'LLM': 5,
+      'Agent': 5,
+      '智能体': 5,
+      'RAG': 5,
+      'Tool Calling': 5,
+      '大模型API': 5,
+      'AI模型接口': 5,
+      '大模型接口': 5,
+      'AI应用后端': 5,
+      'Go': 4,
+      'K8s': 3,
+      'Coze': 4,
+      'Dify': 4,
+      'Python': 4,
+      'Docker': 3
+    }, 25);
+  }
+
+  function scoreWorkContent(text) {
+    const high = uniqueMatches(text, JOB_FIT_KEYWORDS.workHigh);
+    const low = uniqueMatches(text, JOB_FIT_KEYWORDS.workLow);
+    let score = Math.min(high.length * 4, 20);
+
+    if (low.length > high.length) {
+      score = Math.min(score, 8);
+    }
+
+    return { score, high, low };
+  }
+
+  function scoreCompanyValue(text) {
+    let score = 0;
+
+    if (text.includes('上市公司')) score += 8;
+    if (/(字节跳动|京东|美团|快手|百度|阿里|腾讯|度小满|顺丰|中科曙光)/.test(text)) score += 10;
+    if (/(独角兽|10000人以上)/.test(text)) score += 8;
+    if (/(100-499人|500-999人|1000-9999人)/.test(text)) score += 5;
+    if (/(技术团队|研发中心|软件研发部|平台研发)/.test(text)) score += 5;
+    if (/(汽车|金融科技|企业服务|人工智能|软件服务)/.test(text)) score += 3;
+    if (/(外包|驻场|客户现场|实施交付)/.test(text)) score -= 5;
+
+    return Math.max(0, Math.min(score, 15));
+  }
+
+  function getJavaInternFloor(text, jobInfo) {
+    const titleText = `${jobInfo.jobTitle || ''} ${text}`;
+    const isJavaIntern = /(Java实习生|java实习生|Java开发实习|java开发实习|Java开发实习生|JAVA开发实习生|Java研发-实习|Java研发实习|产品研发-Java开发实习|实习-Java开发|后端开发实习生|后端研发实习生)/.test(titleText);
+    const hasInternSignal = /(实习|实习生|见习|校招|应届|在校)/.test(titleText);
+    const isDailyPay = jobInfo.salaryInfo && jobInfo.salaryInfo.type === 'daily';
+    const hardMismatch = !hasInternSignal && (
+      /(3\s*-\s*5\s*年|2\s*-\s*5\s*年|5\s*-\s*10\s*年|实际软件开发经验)/.test(text)
+      || (jobInfo.salaryInfo && jobInfo.salaryInfo.type === 'monthly')
+    );
+
+    if (!isJavaIntern || !hasInternSignal || !isDailyPay || hardMismatch) {
+      return { floor: 0, label: '无' };
+    }
+
+    const hasJava = /Java/i.test(text);
+    const hasSpring = /(SpringBoot|Spring Boot|SpringCloud|Spring Cloud|SpringMVC|Spring)/i.test(text);
+    const hasMySQL = /MySQL/i.test(text);
+    const hasRedisOrMyBatis = /(Redis|MyBatis)/i.test(text);
+
+    if (!(hasJava && hasSpring && hasMySQL && hasRedisOrMyBatis)) {
+      const partialBackendHits = uniqueMatches(text, [
+        'MyBatis', 'Docker', '高并发', '数据库设计', '后端研发',
+        '后端开发', '系统架构设计', '微服务', '后端业务模块'
+      ]);
+
+      if (hasJava && hasSpring && partialBackendHits.length >= 2) {
+        return { floor: 68, label: 'Java后端实习保底68' };
+      }
+
+      return { floor: 0, label: '无' };
+    }
+
+    const advancedHits = uniqueMatches(text, [
+      'SpringCloud', 'Spring Boot', 'SpringBoot', 'MyBatis', 'Redis',
+      'MQ', 'RabbitMQ', 'Kafka', 'Dubbo', 'SpringMVC', 'Docker',
+      '高并发', '高负载', '高可用', '微服务', '后端业务模块',
+      'Java后端开发', '线上问题', 'Bug修复'
+    ]);
+
+    const salaryHigh = jobInfo.salaryInfo.high >= 250 && (jobInfo.city || '').includes('北京');
+
+    if (salaryHigh && advancedHits.length >= 2) {
+      return { floor: 78, label: 'Java后端实习保底75 + 北京高薪' };
+    }
+
+    if (advancedHits.length >= 2) {
+      return { floor: 75, label: 'Java后端实习保底75' };
+    }
+
+    return { floor: 68, label: 'Java后端实习保底68' };
+  }
+
+  function getAiBackendFloor(text, jobInfo, direction) {
+    const aiTitleSignal = /(AI\s*应用开发后端实习生|AI应用开发后端实习生|AI\s*应用开发|AI应用开发|大模型应用开发|Agent开发|智能体开发|RAG|Coze|Dify|AI模型接口|大模型接口|AI应用后端)/i.test(text);
+    const backendSignals = uniqueMatches(text, ['Java', 'Go', 'Python', '后端服务', '接口开发', '后端接口', 'Docker', '微服务', 'K8s']);
+    const hasInternSignal = /(实习|实习生|见习|校招|应届|在校)/.test(text);
+    const isDailyPay = jobInfo.salaryInfo && jobInfo.salaryInfo.type === 'daily';
+
+    if (!aiTitleSignal || backendSignals.length < 2 || !hasInternSignal || !isDailyPay) {
+      return { floor: 0, label: '无' };
+    }
+
+    if (direction === 'Java后端 + AI应用') {
+      return { floor: 76, label: 'AI应用后端实习保底76' };
+    }
+
+    return { floor: 72, label: 'AI应用后端实习保底72' };
+  }
+
+  function getScheduleDurationRisk(jobInfo) {
+    const scheduleText = jobInfo.schedule || '';
+    const durationText = jobInfo.duration || '';
+    const hasSevenDays = /(7\s*天\/周|每周\s*7\s*天|6\s*-\s*7\s*天\/周)/.test(scheduleText);
+    const hasSixDays = /(6\s*天\/周|每周\s*6\s*天|6\s*-\s*7\s*天\/周)/.test(scheduleText);
+    const hasHighIntensitySchedule = hasSixDays || hasSevenDays;
+    const hasTwelveMonths = /(12\s*个月|一年|1\s*年)/.test(durationText);
+    const hasSixMonths = /(6\s*个月|半年)/.test(durationText);
+
+    return {
+      scheduleText,
+      durationText,
+      hasSixDays,
+      hasSevenDays,
+      hasHighIntensitySchedule,
+      hasTwelveMonths,
+      hasSixMonths,
+      longInternRisk: hasHighIntensitySchedule || hasTwelveMonths,
+      source: hasHighIntensitySchedule ? 'schedule' : (hasTwelveMonths ? 'duration' : 'none'),
+      hardRule: hasHighIntensitySchedule ? '高强度出勤' : (hasTwelveMonths ? '12个月' : '无')
+    };
+  }
+
+  function scoreInternCondition(jobInfo) {
+    const scheduleText = jobInfo.schedule || '';
+    const durationText = jobInfo.duration || '';
+
+    if (/(每周\s*)?4-5\s*天/.test(scheduleText) && /3\s*个月以上|至少\s*3\s*个月|3\s*个月/.test(durationText)) return 10;
+    if (/3\s*天\/周|每周\s*3\s*天/.test(scheduleText) && /3\s*个月以上|至少\s*3\s*个月|3\s*个月/.test(durationText)) return 7;
+    if (/5\s*天\/周|每周\s*5\s*天/.test(scheduleText) && /3\s*个月以上|至少\s*3\s*个月|3\s*个月/.test(durationText)) return 10;
+    if (/5\s*天\/周|每周\s*5\s*天/.test(scheduleText) && /6\s*个月/.test(durationText)) return 7;
+    if (/(6\s*天\/周|7\s*天\/周|每周\s*6\s*天|每周\s*7\s*天|6\s*-\s*7\s*天\/周)/.test(scheduleText)) return 2;
+    if (/12\s*个月|一年|1\s*年/.test(durationText)) return 2;
+    return 0;
+  }
+
+  function scoreSalary(text) {
+    const salaryInfo = typeof text === 'object' ? text : parseSalary(text);
+    if (!salaryInfo.raw || salaryInfo.type !== 'daily') return 0;
+
+    const pay = Math.max(salaryInfo.low, salaryInfo.high);
+    const sourceText = typeof text === 'object' ? (text.city || '') : text;
+    const isTianjin = sourceText.includes('天津');
+    const isBeijing = sourceText.includes('北京');
+
+    if (isTianjin) {
+      if (pay > 200) return 10;
+      if (pay >= 150) return 8;
+      if (pay >= 100) return 5;
+      return 1;
+    }
+
+    if (isBeijing) {
+      if (pay > 250) return 10;
+      if (pay >= 180) return 8;
+      if (pay >= 120) return 5;
+      return 1;
+    }
+
+    if (pay >= 200) return 8;
+    if (pay >= 120) return 5;
+    return 1;
+  }
+
+  function detectDirection(text) {
+    const hasCompleteJavaBackendEarly = /Java/i.test(text) && /Spring\s*Boot|SpringBoot|SpringCloud|Spring Cloud|SpringMVC/i.test(text)
+      && /MySQL/i.test(text) && /(Redis|MyBatis)/i.test(text);
+    const hasInternSignal = /(实习生|实习|校招|日常实习|应届|在校)/.test(text);
+    const aiBackendSignal = /(大模型|AI应用|LLM|Agent|RAG|Prompt|知识库)/i.test(text)
+      && /(Java|后端|服务端|接口|Docker|Go|Python|微服务)/i.test(text);
+
+    if (/(C#|\.NET|SQLServer|Windows|PB)/.test(text) && !hasCompleteJavaBackendEarly) {
+      return '.NET/C#/SQLServer非主线';
+    }
+
+    if (aiBackendSignal) {
+      return /Java/i.test(text) ? 'Java后端 + AI应用' : 'AI应用后端 / Agent应用';
+    }
+
+    if (!hasInternSignal && (/(3\s*-\s*5\s*年|2\s*-\s*5\s*年|5\s*-\s*10\s*年|社招)/.test(text) || /\d{1,3}(?:-\d{1,3})?K/.test(text))) {
+      return '社招不匹配';
+    }
+
+    const matched = detectMatchedKeywords(text);
+    const javaScore = scoreJavaStack(text, matched);
+    const aiScore = scoreAiStack(text, matched);
+    const frontendScore = uniqueMatches(text, JOB_FIT_KEYWORDS.frontend).length;
+    const nonTechScore = uniqueMatches(text, JOB_FIT_KEYWORDS.nonTechDirections).length;
+    const hasCompleteJavaBackend = /Java/i.test(text) && /Spring\s*Boot|SpringBoot|SpringCloud|Spring Cloud|SpringMVC/i.test(text)
+      && /MySQL/i.test(text) && /(Redis|MyBatis)/i.test(text);
+    const backendSignalCount = uniqueMatches(text, ['后端开发', 'Java后端开发', '后端业务模块', '接口开发', '微服务', '高并发', '高负载', '高可用']).length;
+    const aiTitleSignal = /(AI\s*应用开发后端实习生|AI应用开发后端实习生|AI\s*应用开发|AI应用开发|大模型应用开发|Agent开发|智能体开发|RAG|Coze|Dify|AI模型接口|大模型接口|AI应用后端)/i.test(text);
+    const aiBackendSignals = uniqueMatches(text, ['Java', 'Go', 'Python', '后端服务', '接口开发', '后端接口', 'Docker', '微服务']);
+    const clientSignalCount = uniqueMatches(text, ['客户端', '移动端', 'Android', 'iOS', 'OC', 'Swift', '抖音客户端', '移动产品']).length;
+    const gisSignalCount = uniqueMatches(text, ['遥感', 'GIS', 'ArcGIS', 'ENVI', 'ERDAS', 'SPOT', 'WorldView', '图像处理', '航空航天']).length;
+    const dotnetSignalCount = uniqueMatches(text, ['C#', '.NET', 'SQLServer', 'Windows', 'PB']).length;
+
+    if (aiTitleSignal && aiBackendSignals.length >= 2) {
+      return /(Java|Go)/i.test(text) ? 'Java后端 + AI应用' : 'AI应用后端 / Agent应用';
+    }
+    if (hasCompleteJavaBackend) return aiScore >= 18 ? 'Java后端 + AI应用' : 'Java后端';
+    if (clientSignalCount >= 2 && backendSignalCount < 2) return '客户端/非Java后端主线';
+    if (gisSignalCount >= 2 && backendSignalCount < 2) return '遥感/GIS/图像处理';
+    if (dotnetSignalCount >= 2 && javaScore < 18) return '.NET/C#/SQLServer非主线';
+    if (nonTechScore >= 2 && javaScore < 8 && aiScore < 8) return '低匹配/非技术';
+    if (javaScore >= 18 && aiScore >= 18) return 'Java后端 + AI应用';
+    if (aiScore >= 18) return 'AI应用后端 / Agent应用';
+    if (javaScore >= 18) return 'Java后端';
+    if (frontendScore >= 2 || /软件开发|研发实习|全栈/.test(text)) return '全栈/软件开发';
+    return '低匹配/非技术';
+  }
+
+  function getConclusion(score, riskFlags, context) {
+    let conclusion = score >= 80 ? '优先投' : score >= 65 ? '可投' : score >= 50 ? '谨慎投' : '不投';
+
+    if (context.highIntensitySevenDays) {
+      return { conclusion: '不投', excelTier: '暂不投' };
+    }
+
+    if (context.nonTechWithoutDev || context.socialRecruitMismatch) {
+      conclusion = '不投';
+    }
+
+    if (context.deliveryRisk || context.longInternRisk) {
+      if (conclusion === '优先投' || conclusion === '可投') {
+        conclusion = '谨慎投';
+      }
+      if (conclusion === '不投' && score >= 40) {
+        conclusion = '谨慎投';
+      }
+    }
+
+    if (riskFlags.includes('测试') && !context.hasStrongDev) {
+      conclusion = score >= 45 ? '谨慎投' : '不投';
+    }
+
+    const excelTier = {
+      优先投: 'A档-高匹配',
+      可投: 'B档-可投',
+      谨慎投: 'C档-练手',
+      不投: '暂不投'
+    }[conclusion];
+
+    return { conclusion, excelTier };
+  }
+
+  function getGreetingType(direction, city, conclusion) {
+    if (conclusion === '不投') return '谨慎不发';
+    if (city === '天津') return '天津本地版';
+    if (direction.includes('AI') || direction.includes('Agent')) return 'AI应用版';
+    if (direction.includes('Java')) return '普通Java版';
+    return conclusion === '谨慎投' ? '谨慎不发' : '普通Java版';
+  }
+
+  function getCity(text) {
+    return firstMatch(text, [JOB_CITY_PATTERN]);
+  }
+
+  function extractCompanyPosition(text) {
+    const lines = text
+      .split('\n')
+      .map(line => clean(line))
+      .filter(line => line.length >= 2 && line.length <= 50);
+
+    const position = lines.find(line => /(Java|后端|服务端|AI|Agent|RAG|大模型|全栈|软件开发|研发实习)/i.test(line)) || '';
+    const company = lines.find(line => /(科技|信息|智能|网络|软件|数据|集团|有限公司|公司)/.test(line) && line !== position) || '';
+
+    return { company, position };
+  }
+
+  function normalizeJobInfo(input) {
+    if (typeof input === 'string') {
+      return extractJobInfoFromDetail(null);
+    }
+
+    const info = input || {};
+    const text = clean([
+      info.jobTitle,
+      info.salary,
+      info.city,
+      info.experience,
+      info.education,
+      info.schedule,
+      info.duration,
+      info.companyName,
+      info.companySize,
+      info.address,
+      (info.tags || []).join(' '),
+      info.jdText
+    ].filter(Boolean).join('\n'));
+
+    return Object.assign({}, info, {
+      salaryInfo: info.salaryInfo || parseSalary(info.salary || text),
+      jdText: text,
+      sourceType: info.sourceType || 'detail-panel'
+    });
+  }
+
+  function buildReason(result) {
+    const parts = [];
+
+    if (result.matchedKeywords.java.length) {
+      parts.push(`Java/后端关键词较明确：${result.matchedKeywords.java.slice(0, 4).join('、')}。`);
+    }
+    if (result.matchedKeywords.ai.length) {
+      parts.push(`AI应用相关关键词较明确：${result.matchedKeywords.ai.slice(0, 4).join('、')}。`);
+    }
+    if (result.riskFlags.length) {
+      parts.push(`需要注意风险点：${result.riskFlags.slice(0, 5).join('、')}。`);
+    }
+    if (!parts.length) {
+      parts.push('当前页面可见文本中技术匹配信息较少，建议人工查看岗位详情后再决定。');
+    }
+
+    if (result.conclusion === '优先投') parts.unshift('整体匹配度较高，适合优先跟进。');
+    if (result.conclusion === '可投') parts.unshift('整体匹配度尚可，可以加入跟进列表。');
+    if (result.conclusion === '谨慎投') parts.unshift('存在一定不确定性，建议谨慎判断。');
+    if (result.conclusion === '不投') parts.unshift('当前匹配度较低，建议暂不投入过多精力。');
+
+    return parts.slice(0, 3).join('');
+  }
+
+  function scoreJob(jobInfo) {
+    if (typeof jobInfo === 'string') {
+      jobInfo = {
+        jdText: clean(jobInfo),
+        salaryInfo: parseSalary(jobInfo),
+        salary: parseSalary(jobInfo).raw,
+        city: getCity(jobInfo),
+        experience: parseExperience(jobInfo),
+        education: parseEducation(jobInfo),
+        tags: extractTags(jobInfo),
+        sourceType: 'fallback-body'
+      };
+    }
+
+    jobInfo = normalizeJobInfo(jobInfo);
+    const text = jobInfo.jdText;
+    const hasInternSignal = /(实习生|实习|校招|日常实习|应届|在校)/.test(text);
+
+    const matchedKeywords = detectMatchedKeywords(text);
+    const riskFlags = detectRiskFlags(text);
+    const scheduleRisk = getScheduleDurationRisk(jobInfo);
+    if (!scheduleRisk.hasSixDays) {
+      const idx = riskFlags.indexOf('6天/周');
+      if (idx >= 0) riskFlags.splice(idx, 1);
+    }
+    if (scheduleRisk.hasSixDays && !riskFlags.includes('6天/周')) {
+      riskFlags.push('6天/周');
+    }
+    if (scheduleRisk.hasSevenDays && !riskFlags.includes('7天/周')) {
+      riskFlags.push('7天/周');
+    }
+    if (!scheduleRisk.hasTwelveMonths) {
+      const idx = riskFlags.indexOf('12个月');
+      if (idx >= 0) riskFlags.splice(idx, 1);
+    }
+    if (!hasInternSignal && /(3\s*-\s*5\s*年|2\s*-\s*5\s*年|5\s*-\s*10\s*年)/.test(text)) riskFlags.push('社招经验要求');
+    if (!hasInternSignal && jobInfo.salaryInfo && jobInfo.salaryInfo.type === 'monthly') riskFlags.push('月薪社招');
+
+    const directionScore = scoreDirection(text);
+    const javaScore = scoreJavaStack(text, matchedKeywords);
+    const aiScore = scoreAiStack(text, matchedKeywords);
+    const work = scoreWorkContent(text);
+    const companyScore = scoreCompanyValue(text);
+    const internScore = scoreInternCondition(jobInfo);
+    const salaryScore = scoreSalary(Object.assign({}, jobInfo.salaryInfo, { city: jobInfo.city }));
+    const configScore = scoreActiveScoringConfig(text);
+    const rawScore = directionScore + javaScore + aiScore + work.score + companyScore + internScore + salaryScore + configScore.score;
+    const devKeywordCount = matchedKeywords.java.length + matchedKeywords.ai.length + matchedKeywords.backend.length + matchedKeywords.profile.length + work.high.length;
+    const fullstackTechFit = /全栈|软件开发|研发实习/.test(text) && devKeywordCount >= 3 && work.high.length >= 1;
+    const nonTechHits = uniqueMatches(text, JOB_FIT_KEYWORDS.nonTechDirections);
+    const direction = detectDirection(text);
+    const city = jobInfo.city || getCity(text);
+    const javaInternFloor = getJavaInternFloor(text, jobInfo);
+    const aiBackendFloor = getAiBackendFloor(text, jobInfo, direction);
+    const nonMainlineDirection = ['客户端/非Java后端主线', '遥感/GIS/图像处理', '.NET/C#/SQLServer非主线'].includes(direction);
+    const scoreFloor = Math.max(fullstackTechFit ? 50 : 0, javaInternFloor.floor, aiBackendFloor.floor);
+    let score = Math.max(scoreFloor, Math.min(100, rawScore));
+    let hardRule = '无';
+
+    if (scheduleRisk.hasSixMonths && !riskFlags.includes('6个月')) {
+      riskFlags.push('6个月');
+    }
+
+    if (scheduleRisk.hasSixMonths && jobInfo.salaryInfo && jobInfo.salaryInfo.type === 'daily' && jobInfo.salaryInfo.high < 250) {
+      score = Math.min(score, 72);
+    }
+
+    if (nonMainlineDirection) {
+      score = Math.min(score, direction === '客户端/非Java后端主线' ? 62 : 45);
+      hardRule = '非主线方向';
+    }
+
+    const context = {
+      nonTechWithoutDev: nonTechHits.length > 0 && devKeywordCount < 2,
+      deliveryRisk: /(实施交付|实施工程师|实施顾问|驻场实施|运维|驻场|外派|客户现场)/.test(text),
+      longInternRisk: scheduleRisk.longInternRisk,
+      highIntensitySevenDays: scheduleRisk.hasSevenDays,
+      javaOnlyWeak: /Java/i.test(text) && !/(Spring|MySQL|Redis|接口开发|后端接口)/i.test(text),
+      aiOpsOnly: /(AI工具使用|内容处理|知识库维护|文档整理)/.test(text) && !/(Agent|RAG|大模型API|后端接口|Python|Java)/i.test(text),
+      hasStrongDev: devKeywordCount >= 3 || work.high.length >= 2,
+      socialRecruitMismatch: !hasInternSignal && (
+        /(3\s*-\s*5\s*年|2\s*-\s*5\s*年|5\s*-\s*10\s*年|2\s*-\s*5年实际软件开发经验|实际软件开发经验)/.test(text)
+        || (jobInfo.salaryInfo && jobInfo.salaryInfo.type === 'monthly')
+      )
+    };
+
+    if (configScore.hardRejectMatches.length) {
+      configScore.hardRejectMatches.forEach(flag => {
+        if (!riskFlags.includes(flag)) riskFlags.push(flag);
+      });
+      if (!context.hasStrongDev && !hasInternSignal) {
+        context.nonTechWithoutDev = true;
+      }
+    }
+
+    if (context.socialRecruitMismatch) hardRule = '社招不匹配';
+    if (context.longInternRisk) hardRule = scheduleRisk.hardRule;
+
+    const conclusionInfo = getConclusion(score, riskFlags, context);
+
+    const fallbackCompanyPosition = extractCompanyPosition(text);
+    const resolvedCompanyName = isValidCompanyName(jobInfo.companyName)
+      ? cleanCompanyName(jobInfo.companyName)
+      : (isValidCompanyName(fallbackCompanyPosition.company) ? cleanCompanyName(fallbackCompanyPosition.company) : '');
+
+    const result = {
+      score,
+      rawScore: Math.min(100, rawScore),
+      finalScore: score,
+      conclusion: conclusionInfo.conclusion,
+      excelTier: conclusionInfo.excelTier,
+      direction,
+      matchedKeywords,
+      riskFlags,
+      greetingType: getGreetingType(direction, city, conclusionInfo.conclusion),
+      companyPosition: {
+        company: resolvedCompanyName,
+        position: jobInfo.jobTitle || fallbackCompanyPosition.position
+      },
+      city,
+      jobInfo,
+      sourceType: jobInfo.sourceType,
+      ruleInfo: {
+        floorRule: javaInternFloor.label !== '无' ? javaInternFloor.label : (aiBackendFloor.label !== '无' ? aiBackendFloor.label : (fullstackTechFit ? '全栈/软件开发保底50' : '无')),
+        companyValue: companyScore > 0 ? '公司平台加分' : '无',
+        hardRule,
+        scheduleRaw: scheduleRisk.scheduleText || '未识别',
+        durationRaw: scheduleRisk.durationText || '未识别',
+        longInternRiskSource: scheduleRisk.source,
+        scoringConfigSource,
+        scoringConfigStatusText,
+        configScore: configScore.score
+      }
+    };
+
+    result.reason = buildReason(result);
+    return result;
+  }
+
+  function escapeHtml(s) {
+    return String(s || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function flattenKeywordGroups(groups) {
+    return []
+      .concat(groups.java || [])
+      .concat(groups.backend || [])
+      .concat(groups.ai || [])
+      .concat(groups.work || [])
+      .filter((item, index, arr) => arr.indexOf(item) === index);
+  }
+
+  function buildJobAnalysisText(result) {
+    const keywords = flattenKeywordGroups(result.matchedKeywords);
+
+    return [
+      `公司/岗位：${result.companyPosition.company || ''} ${result.companyPosition.position || ''}`.trim(),
+      `结论：${result.conclusion}`,
+      `评分：${result.score}`,
+      `方向：${result.direction}`,
+      `Excel档位：${result.excelTier}`,
+      `匹配关键词：${keywords.join('、') || '无'}`,
+      `风险点：${result.riskFlags.join('、') || '无'}`,
+      `推荐开场白版本：${result.greetingType}`,
+      `简短理由：${result.reason}`
+    ].join('\n');
+  }
+
+  function getJobFitResultKey(result) {
+    return [
+      result.companyPosition.company,
+      result.companyPosition.position,
+      result.jobInfo.salary,
+      result.city,
+      result.jobInfo.schedule,
+      result.jobInfo.duration
+    ].filter(Boolean).join('|');
+  }
+
+  function buildAiAnalyzePayload(jobInfo, scoreResult) {
+    return {
+      jobTitle: scoreResult.companyPosition.position || jobInfo.jobTitle || '',
+      companyName: scoreResult.companyPosition.company || jobInfo.companyName || '',
+      salary: jobInfo.salary || '',
+      city: scoreResult.city || jobInfo.city || '',
+      schedule: jobInfo.schedule || '',
+      duration: jobInfo.duration || '',
+      jobText: jobInfo.jdText || '',
+      ruleScore: scoreResult.finalScore,
+      ruleConclusion: scoreResult.conclusion
+    };
+  }
+
+  function callAiAnalyzeBackend(payload) {
+    return new Promise((resolve, reject) => {
+      if (typeof GM_xmlhttpRequest !== 'function') {
+        reject(new Error('GM_xmlhttpRequest unavailable'));
+        return;
+      }
+
+      GM_xmlhttpRequest({
+        method: 'POST',
+        url: 'http://localhost:8080/api/job/analyze',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        data: JSON.stringify(payload),
+        timeout: 15000,
+        onload: response => {
+          if (response.status < 200 || response.status >= 300) {
+            reject(new Error(`HTTP ${response.status}`));
+            return;
+          }
+
+          try {
+            resolve(JSON.parse(response.responseText || '{}'));
+          } catch (e) {
+            reject(new Error('Invalid JSON response'));
+          }
+        },
+        onerror: () => reject(new Error('Request failed')),
+        ontimeout: () => reject(new Error('Request timeout'))
+      });
+    });
+  }
+
+  function callJobHistoryMatchBackend(companyName, jobTitle) {
+    return new Promise((resolve, reject) => {
+      if (typeof GM_xmlhttpRequest !== 'function') {
+        reject(new Error('GM_xmlhttpRequest unavailable'));
+        return;
+      }
+
+      const params = [
+        ['companyName', companyName || ''],
+        ['jobTitle', jobTitle || '']
+      ].map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`).join('&');
+
+      GM_xmlhttpRequest({
+        method: 'GET',
+        url: `http://localhost:8080/api/jobs/match?${params}`,
+        timeout: 8000,
+        onload: response => {
+          if (response.status < 200 || response.status >= 300) {
+            reject(new Error(`HTTP ${response.status}`));
+            return;
+          }
+
+          try {
+            const data = JSON.parse(response.responseText || '[]');
+            resolve(Array.isArray(data) ? data : []);
+          } catch (e) {
+            reject(new Error('Invalid JSON response'));
+          }
+        },
+        onerror: () => reject(new Error('Request failed')),
+        ontimeout: () => reject(new Error('Request timeout'))
+      });
+    });
+  }
+
+  async function loadJobHistoryForResult(result, force) {
+    if (!result) return;
+    const companyName = result.companyPosition && result.companyPosition.company ? result.companyPosition.company : '';
+    const jobTitle = result.companyPosition && result.companyPosition.position ? result.companyPosition.position : '';
+    const historyKey = `${companyName}|${jobTitle}`;
+    if (!companyName && !jobTitle) return;
+    if (!force && (jobFitHistoryLoading || jobFitHistoryKey === historyKey)) return;
+
+    jobFitHistoryKey = historyKey;
+    jobFitHistoryLoading = true;
+    jobFitHistoryError = '';
+
+    try {
+      const records = await callJobHistoryMatchBackend(companyName, jobTitle);
+      if (jobFitHistoryKey !== historyKey) return;
+      jobFitHistoryRecords = records.slice(0, 5);
+    } catch (e) {
+      if (jobFitHistoryKey !== historyKey) return;
+      jobFitHistoryRecords = [];
+      jobFitHistoryError = '历史记录查询失败';
+    } finally {
+      if (jobFitHistoryKey === historyKey) {
+        jobFitHistoryLoading = false;
+        updateFeedbackDraftFromDom();
+        renderJobFitPanel(jobFitLastResult);
+      }
+    }
+  }
+
+  function resetFeedbackDraft() {
+    jobFitFeedbackDraft = {
+      applyStatus: '未投递',
+      chatStatus: '未沟通',
+      interviewStatus: '未约面',
+      feedbackNote: '',
+      rejectReason: ''
+    };
+  }
+
+  function updateFeedbackDraftFromDom() {
+    const applyStatus = document.getElementById('job-fit-feedback-apply-status');
+    const chatStatus = document.getElementById('job-fit-feedback-chat-status');
+    const interviewStatus = document.getElementById('job-fit-feedback-interview-status');
+    const feedbackNote = document.getElementById('job-fit-feedback-note');
+    const rejectReason = document.getElementById('job-fit-feedback-reject-reason');
+
+    if (applyStatus) jobFitFeedbackDraft.applyStatus = clean(applyStatus.value || '未投递');
+    if (chatStatus) jobFitFeedbackDraft.chatStatus = clean(chatStatus.value || '未沟通');
+    if (interviewStatus) jobFitFeedbackDraft.interviewStatus = clean(interviewStatus.value || '未约面');
+    if (feedbackNote) jobFitFeedbackDraft.feedbackNote = feedbackNote.value || '';
+    if (rejectReason) jobFitFeedbackDraft.rejectReason = rejectReason.value || '';
+  }
+
+  function bindFeedbackDraftEvents() {
+    const fields = [
+      ['job-fit-feedback-apply-status', 'change'],
+      ['job-fit-feedback-chat-status', 'change'],
+      ['job-fit-feedback-interview-status', 'change'],
+      ['job-fit-feedback-note', 'input'],
+      ['job-fit-feedback-reject-reason', 'input']
+    ];
+
+    fields.forEach(([id, eventName]) => {
+      const el = document.getElementById(id);
+      if (!el || el.dataset.jobFitFeedbackBound === '1') return;
+      el.dataset.jobFitFeedbackBound = '1';
+      el.addEventListener(eventName, updateFeedbackDraftFromDom);
+    });
+  }
+
+  function readFeedbackField(id) {
+    const el = document.getElementById(id);
+    return el ? clean(el.value || '') : '';
+  }
+
+  function buildFeedbackPayload(aiResult) {
+    updateFeedbackDraftFromDom();
+    const rawJobRecordId = aiResult && aiResult.jobRecordId != null ? Number(aiResult.jobRecordId) : null;
+
+    return {
+      jobRecordId: Number.isFinite(rawJobRecordId) && rawJobRecordId > 0 ? rawJobRecordId : null,
+      taskId: aiResult && aiResult.taskId ? String(aiResult.taskId) : '',
+      applyStatus: jobFitFeedbackDraft.applyStatus || '未投递',
+      chatStatus: jobFitFeedbackDraft.chatStatus || '未沟通',
+      interviewStatus: jobFitFeedbackDraft.interviewStatus || '未约面',
+      feedbackNote: jobFitFeedbackDraft.feedbackNote || '',
+      rejectReason: jobFitFeedbackDraft.rejectReason || ''
+    };
+  }
+
+  function callSaveJobFeedback(payload) {
+    return new Promise((resolve, reject) => {
+      if (typeof GM_xmlhttpRequest !== 'function') {
+        reject(new Error('GM_xmlhttpRequest unavailable'));
+        return;
+      }
+
+      GM_xmlhttpRequest({
+        method: 'POST',
+        url: 'http://localhost:8080/api/job/feedback',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        data: JSON.stringify(payload),
+        timeout: 10000,
+        onload: response => {
+          if (response.status < 200 || response.status >= 300) {
+            reject(new Error(`HTTP ${response.status}`));
+            return;
+          }
+
+          try {
+            resolve(JSON.parse(response.responseText || '{}'));
+          } catch (e) {
+            reject(new Error('Invalid JSON response'));
+          }
+        },
+        onerror: () => reject(new Error('Request failed')),
+        ontimeout: () => reject(new Error('Request timeout'))
+      });
+    });
+  }
+
+  function feedbackSelect(id, options, selectedValue) {
+    const selected = selectedValue || options[0];
+
+    return `
+      <select id="${id}" style="width:100%;box-sizing:border-box;border:1px solid #d1d5db;border-radius:6px;padding:5px 6px;background:#fff;color:#111827;">
+        ${options.map(option => `<option value="${escapeHtml(option)}" ${option === selected ? 'selected' : ''}>${escapeHtml(option)}</option>`).join('')}
+      </select>
+    `;
+  }
+
+  function renderFeedbackStatus() {
+    if (jobFitFeedbackSaving) {
+      return '<div style="margin-top:6px;color:#6b7280;font-size:12px;">正在保存反馈...</div>';
+    }
+
+    if (jobFitFeedbackError) {
+      return `<div style="margin-top:6px;color:#dc2626;font-size:12px;">${escapeHtml(jobFitFeedbackError)}</div>`;
+    }
+
+    if (jobFitFeedbackSaved) {
+      const savedId = jobFitFeedbackLastResponse && jobFitFeedbackLastResponse.id ? ` #${jobFitFeedbackLastResponse.id}` : '';
+      return `<div style="margin-top:6px;color:#16a34a;font-size:12px;">反馈已保存${escapeHtml(savedId)}</div>`;
+    }
+
+    return '<div style="margin-top:6px;color:#6b7280;font-size:12px;">反馈只在手动点击保存后写入本地后端。</div>';
+  }
+
+  function renderFeedbackPanel(aiResult) {
+    if (!aiResult) return '';
+
+    const hasJobRecordId = aiResult.jobRecordId != null && String(aiResult.jobRecordId).trim() !== '';
+    const hasTaskId = aiResult.taskId != null && String(aiResult.taskId).trim() !== '';
+    const canSave = hasJobRecordId || hasTaskId;
+
+    return `
+      <details open style="margin-top:8px;padding:8px;border-radius:8px;background:#f8fafc;border:1px solid #e5e7eb;">
+        <summary style="cursor:pointer;font-weight:700;">投递反馈</summary>
+        <div style="margin-top:8px;">
+          <div style="margin-bottom:6px;color:#6b7280;font-size:12px;">
+            jobRecordId: ${escapeHtml(hasJobRecordId ? aiResult.jobRecordId : '未返回')}，
+            taskId: ${escapeHtml(hasTaskId ? aiResult.taskId : '未返回')}
+          </div>
+
+          <label style="display:block;margin:6px 0 3px;font-weight:600;">投递状态</label>
+          ${feedbackSelect('job-fit-feedback-apply-status', ['未投递', '已投递', '不投', '待定'], jobFitFeedbackDraft.applyStatus || '未投递')}
+
+          <label style="display:block;margin:6px 0 3px;font-weight:600;">沟通状态</label>
+          ${feedbackSelect('job-fit-feedback-chat-status', ['未沟通', '已沟通', 'HR已回复', '无回复'], jobFitFeedbackDraft.chatStatus || '未沟通')}
+
+          <label style="display:block;margin:6px 0 3px;font-weight:600;">面试状态</label>
+          ${feedbackSelect('job-fit-feedback-interview-status', ['未约面', '已约面', '一面通过', '一面挂', '已通过'], jobFitFeedbackDraft.interviewStatus || '未约面')}
+
+          <label style="display:block;margin:6px 0 3px;font-weight:600;">备注</label>
+          <textarea id="job-fit-feedback-note" placeholder="备注，例如岗位方向匹配，准备继续跟进" style="width:100%;height:52px;box-sizing:border-box;border:1px solid #d1d5db;border-radius:6px;padding:6px;resize:vertical;color:#111827;">${escapeHtml(jobFitFeedbackDraft.feedbackNote || '')}</textarea>
+
+          <label style="display:block;margin:6px 0 3px;font-weight:600;">不投/放弃原因</label>
+          <input id="job-fit-feedback-reject-reason" value="${escapeHtml(jobFitFeedbackDraft.rejectReason || '')}" placeholder="不投或放弃原因，可为空" style="width:100%;box-sizing:border-box;border:1px solid #d1d5db;border-radius:6px;padding:6px;color:#111827;" />
+
+          <button id="job-fit-feedback-save" ${jobFitFeedbackSaving || !canSave ? 'disabled' : ''} style="width:100%;margin-top:8px;border:none;background:#2563eb;color:#fff;border-radius:8px;padding:8px 10px;cursor:${jobFitFeedbackSaving || !canSave ? 'not-allowed' : 'pointer'};font-weight:700;opacity:${jobFitFeedbackSaving || !canSave ? '.65' : '1'};">
+            ${jobFitFeedbackSaving ? '保存中...' : '保存投递反馈'}
+          </button>
+          ${!canSave ? '<div style="margin-top:6px;color:#dc2626;font-size:12px;">缺少 jobRecordId 和 taskId，暂时无法保存反馈。</div>' : ''}
+          ${renderFeedbackStatus()}
+        </div>
+      </details>
+    `;
+  }
+
+  function renderCompactList(items, emptyText) {
+    const list = Array.isArray(items) ? items.filter(Boolean) : [];
+    if (!list.length) return `<div style="color:#6b7280;">${escapeHtml(emptyText)}</div>`;
+
+    return `<ul style="margin:4px 0 0 18px;padding:0;">${list.slice(0, 4).map(item =>
+      `<li style="margin-bottom:3px;">${escapeHtml(item)}</li>`
+    ).join('')}</ul>`;
+  }
+
+  function compactText(value, maxLength) {
+    const text = String(value || '').replace(/\s+/g, ' ').trim();
+    if (!text || text.length <= maxLength) return text;
+    return `${text.slice(0, maxLength)}...`;
+  }
+
+  function renderProfileRagEvidence(profileRag) {
+    if (!profileRag) return '';
+
+    const enabled = profileRag.enabled === true;
+    const chunks = Array.isArray(profileRag.chunks) ? profileRag.chunks.slice(0, 5) : [];
+    const profileVersion = compactText(profileRag.profileVersion || '', 8) || '未返回';
+    const query = compactText(profileRag.query || '', 80) || '未返回';
+    const chunkCount = Number.isFinite(Number(profileRag.chunkCount)) ? Number(profileRag.chunkCount) : chunks.length;
+    const reason = profileRag.reason ? compactText(profileRag.reason, 120) : '';
+
+    return `
+      <details style="margin-top:10px;padding:8px;border-radius:8px;background:#fff;border:1px solid #e5e7eb;">
+        <summary style="cursor:pointer;font-weight:700;">画像命中证据</summary>
+        <div style="margin-top:8px;font-size:12px;color:#374151;">
+          <div style="margin-bottom:4px;"><b>是否启用：</b>${enabled ? '已启用' : '未启用 / 检索失败'}</div>
+          <div style="margin-bottom:4px;"><b>命中数量：</b>${escapeHtml(chunkCount)}</div>
+          <div style="margin-bottom:4px;"><b>画像版本：</b>${escapeHtml(profileVersion)}</div>
+          <div style="margin-bottom:6px;"><b>检索 Query：</b>${escapeHtml(query)}</div>
+          ${!enabled && reason ? `<div style="margin-bottom:6px;color:#b45309;"><b>原因：</b>${escapeHtml(reason)}</div>` : ''}
+          ${chunks.length ? chunks.map(chunk => `
+            <div style="margin-top:6px;padding-top:6px;border-top:1px solid #f3f4f6;">
+              <div><b>${escapeHtml(chunk.title || '未命名资料')}</b>
+                <span style="color:#6b7280;"> · score ${escapeHtml(chunk.score == null ? '0' : chunk.score)} · ${escapeHtml(chunk.sourceType || 'unknown')}</span>
+              </div>
+              <div style="margin-top:3px;color:#4b5563;line-height:1.45;">${escapeHtml(compactText(chunk.content || '', 120) || '无内容')}</div>
+            </div>
+          `).join('') : '<div style="margin-top:6px;color:#6b7280;">未命中用户画像资料。</div>'}
+        </div>
+      </details>
+    `;
+  }
+
+  function renderJobHistoryPanel() {
+    if (jobFitHistoryLoading) {
+      return '<div style="margin-top:8px;color:#6b7280;font-size:12px;">正在查询历史记录...</div>';
+    }
+
+    if (jobFitHistoryError) {
+      return '';
+    }
+
+    const records = Array.isArray(jobFitHistoryRecords) ? jobFitHistoryRecords.slice(0, 3) : [];
+    if (!records.length) {
+      return '';
+    }
+
+    return `
+      <details style="margin-top:8px;padding:8px;border-radius:8px;background:#f8fafc;border:1px solid #e5e7eb;">
+        <summary style="cursor:pointer;font-weight:700;">历史记录</summary>
+        <div style="margin-top:8px;font-size:12px;color:#374151;">
+          ${records.map(record => `
+            <div style="padding:6px 0;border-top:1px solid #eef2f7;">
+              <div style="font-weight:700;">${escapeHtml(record.companyName || '未知公司')} · ${escapeHtml(record.jobTitle || '未知岗位')}</div>
+              <div style="margin-top:3px;color:#6b7280;">最近分析时间：${escapeHtml(compactText(record.createdAt || '', 19) || '未返回')}</div>
+              <div style="margin-top:3px;">AI 判断：${escapeHtml(record.aiDecision || '未返回')} · 分数：${escapeHtml(record.aiScore == null ? '未返回' : record.aiScore)}</div>
+              <div style="margin-top:3px;">投递：${escapeHtml(record.applyStatus || '未记录')} / 沟通：${escapeHtml(record.chatStatus || '未记录')} / 面试：${escapeHtml(record.interviewStatus || '未记录')}</div>
+              <div style="margin-top:3px;">备注：${escapeHtml(compactText(record.feedbackNote || '', 80) || '无')}</div>
+              <div style="margin-top:3px;color:#6b7280;">jobRecordId: ${escapeHtml(record.jobRecordId || '未返回')}</div>
+            </div>
+          `).join('')}
+        </div>
+      </details>
+    `;
+  }
+
+  function renderAiAnalyzeResult(result, error, loading) {
+    if (loading) {
+      return `
+        <div style="margin-top:8px;padding:8px;border-radius:8px;background:#f9fafb;border:1px solid #e5e7eb;color:#6b7280;">
+          正在调用本地后端进行 AI 深度核验...
+        </div>
+      `;
+    }
+
+    if (error) {
+      return `
+        <div style="margin-top:8px;padding:8px;border-radius:8px;background:#fff7ed;border:1px solid #fed7aa;color:#c2410c;">
+          ${escapeHtml(error)}
+        </div>
+      `;
+    }
+
+    if (!result) {
+      return `
+        <div style="margin-top:8px;color:#6b7280;font-size:12px;">
+          AI 深度核验仅在手动点击按钮后调用本地后端。
+        </div>
+      `;
+    }
+
+    return `
+      <details open style="margin-top:8px;padding:8px;border-radius:8px;background:#f9fafb;border:1px solid #e5e7eb;">
+        <summary style="cursor:pointer;font-weight:700;">AI 深度核验结果</summary>
+        <div style="margin-top:8px;">
+          <div style="margin-bottom:4px;"><b>AI 决策：</b>${escapeHtml(result.decision || '未返回')}</div>
+          <div style="margin-bottom:4px;"><b>AI 分数：</b>${escapeHtml(result.score == null ? '未返回' : result.score)}</div>
+          <div style="margin-bottom:4px;"><b>方向：</b>${escapeHtml(result.direction || '未返回')}</div>
+          <div style="margin:8px 0 4px;"><b>Reasons</b></div>
+          ${renderCompactList(result.reasons, '暂无')}
+          <div style="margin:8px 0 4px;"><b>Risks</b></div>
+          ${renderCompactList(result.risks, '暂无')}
+          <div style="margin:8px 0 4px;"><b>Resume Matches</b></div>
+          ${renderCompactList(result.resumeMatches, '暂无')}
+          <div style="margin:8px 0 4px;"><b>Interview Focus</b></div>
+          ${renderCompactList(result.interviewFocus, '暂无')}
+          <div style="margin:8px 0 4px;"><b>Suggested Message</b></div>
+          <div style="color:#374151;">${escapeHtml(result.suggestedMessage || '暂无')}</div>
+          ${renderProfileRagEvidence(result.profileRag)}
+        </div>
+      </details>
+    `;
+  }
+
+  function copyText(text) {
+    try {
+      GM_setClipboard(text);
+      return true;
+    } catch (e) {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.left = '-9999px';
+      document.body.appendChild(textarea);
+      textarea.select();
+      const ok = document.execCommand('copy');
+      textarea.remove();
+      return ok;
+    }
+  }
+
+  function renderTagList(items, emptyText) {
+    if (!items.length) return `<span style="color:#6b7280;">${escapeHtml(emptyText)}</span>`;
+    return items.slice(0, 10).map(item =>
+      `<span style="display:inline-block;margin:2px 4px 2px 0;padding:2px 6px;border-radius:999px;background:#f3f4f6;color:#374151;">${escapeHtml(item)}</span>`
+    ).join('');
+  }
+
+  function renderJobFitPanel(result) {
+    const resultKey = getJobFitResultKey(result);
+    if (resultKey !== jobFitLastKey) {
+      jobFitAiResult = null;
+      jobFitAiError = '';
+      jobFitAiLoading = false;
+      jobFitHistoryRecords = [];
+      jobFitHistoryLoading = false;
+      jobFitHistoryError = '';
+      jobFitHistoryKey = '';
+      jobFitFeedbackSaving = false;
+      jobFitFeedbackSaved = false;
+      jobFitFeedbackError = '';
+      jobFitFeedbackLastResponse = null;
+      resetFeedbackDraft();
+      jobFitLastKey = resultKey;
+    }
+    jobFitLastResult = result;
+
+    let panel = document.getElementById('job-fit-scoring-panel');
+    const color = JOB_FIT_COLORS[result.conclusion] || '#6b7280';
+    const keywords = flattenKeywordGroups(result.matchedKeywords);
+    const sourceMessage = result.sourceType === 'detail-panel'
+      ? '已识别右侧岗位详情'
+      : '未能精准定位右侧详情，结果可能受左侧列表干扰';
+    const sourceColor = result.sourceType === 'detail-panel' ? '#16a34a' : '#f97316';
+
+    if (!panel) {
+      panel = document.createElement('div');
+      panel.id = 'job-fit-scoring-panel';
+      panel.style.cssText = `
+        position: fixed;
+        right: 20px;
+        bottom: 24px;
+        width: 320px;
+        max-height: 72vh;
+        overflow: auto;
+        background: #fff;
+        color: #111827;
+        z-index: 999998;
+        border: 1px solid #e5e7eb;
+        box-shadow: 0 8px 28px rgba(0,0,0,.16);
+        border-radius: 10px;
+        font-size: 13px;
+        line-height: 1.45;
+      `;
+      document.body.appendChild(panel);
+    }
+
+    panel.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid #e5e7eb;">
+        <div style="font-weight:700;">岗位匹配度 v1.3.1</div>
+        <button id="job-fit-toggle" style="border:none;background:#f3f4f6;border-radius:6px;padding:3px 8px;cursor:pointer;">${jobFitCollapsed ? '展开' : '折叠'}</button>
+      </div>
+      <div id="job-fit-body" style="display:${jobFitCollapsed ? 'none' : 'block'};padding:12px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+          <span style="font-size:18px;font-weight:700;color:${color};">${escapeHtml(result.conclusion)}</span>
+          <span style="font-size:22px;font-weight:800;color:${color};">${result.score}</span>
+        </div>
+        <div style="margin-bottom:8px;padding:6px 8px;border-radius:8px;background:#f9fafb;color:${sourceColor};font-size:12px;">
+          ${escapeHtml(sourceMessage)}
+        </div>
+        <div style="margin-bottom:8px;padding:6px 8px;border-radius:8px;background:${scoringConfigSource === 'backend' ? '#ecfdf5' : '#f9fafb'};color:${scoringConfigSource === 'backend' ? '#047857' : '#6b7280'};font-size:12px;">
+          评分配置：${escapeHtml(scoringConfigStatusText)}${scoringConfigLoaded ? '（已确认）' : ''}
+        </div>
+        <div style="margin-bottom:6px;"><b>当前识别公司：</b>${escapeHtml(result.companyPosition.company || '未识别')}</div>
+        <div style="margin-bottom:6px;"><b>当前识别岗位：</b>${escapeHtml(result.companyPosition.position || '未识别')}</div>
+        <div style="margin-bottom:6px;"><b>当前识别薪资：</b>${escapeHtml(result.jobInfo.salary || '未识别')}</div>
+        <div style="margin-bottom:6px;"><b>当前识别城市：</b>${escapeHtml(result.city || '未识别')}</div>
+        <div style="margin-bottom:6px;"><b>当前识别出勤周期：</b>${escapeHtml([result.jobInfo.schedule, result.jobInfo.duration].filter(Boolean).join(' / ') || '未识别')}</div>
+        <div style="margin-bottom:6px;"><b>原始分数：</b>${escapeHtml(result.rawScore)}</div>
+        <div style="margin-bottom:6px;"><b>最终分数：</b>${escapeHtml(result.finalScore)}</div>
+        <div style="margin-bottom:6px;"><b>保底规则：</b>${escapeHtml(result.ruleInfo.floorRule)}${result.ruleInfo.companyValue !== '无' ? ` / ${escapeHtml(result.ruleInfo.companyValue)}` : ''}</div>
+        <div style="margin-bottom:6px;"><b>硬性规则：</b>${escapeHtml(result.ruleInfo.hardRule)}</div>
+        <div style="margin-bottom:6px;"><b>画像配置加权：</b>${escapeHtml(result.ruleInfo.configScore)}</div>
+        <div style="margin:8px 0 4px;color:#6b7280;font-size:12px;"><b>scheduleRaw:</b> ${escapeHtml(result.ruleInfo.scheduleRaw)}</div>
+        <div style="margin-bottom:4px;color:#6b7280;font-size:12px;"><b>durationRaw:</b> ${escapeHtml(result.ruleInfo.durationRaw)}</div>
+        <div style="margin-bottom:6px;color:#6b7280;font-size:12px;"><b>longInternRiskSource:</b> ${escapeHtml(result.ruleInfo.longInternRiskSource)}</div>
+        <div style="margin-bottom:4px;color:#6b7280;font-size:12px;"><b>titleSource:</b> ${escapeHtml(result.jobInfo.titleSource || 'unresolved')}</div>
+        <div style="margin-bottom:4px;color:#6b7280;font-size:12px;"><b>companySource:</b> ${escapeHtml(result.jobInfo.companyNameSource || 'unresolved')}</div>
+        <div style="margin-bottom:4px;color:#6b7280;font-size:12px;"><b>salarySource:</b> ${escapeHtml(result.jobInfo.salarySource || 'unresolved')}</div>
+        <div style="margin-bottom:6px;color:#6b7280;font-size:12px;"><b>citySource:</b> ${escapeHtml(result.jobInfo.citySource || 'unresolved')}</div>
+        <div style="margin-bottom:6px;"><b>方向判断：</b>${escapeHtml(result.direction)}</div>
+        <div style="margin-bottom:6px;"><b>Excel 档位：</b>${escapeHtml(result.excelTier)}</div>
+        <div style="margin-bottom:6px;"><b>推荐开场白：</b>${escapeHtml(result.greetingType)}</div>
+        <div style="margin:8px 0 4px;"><b>命中关键词：</b></div>
+        <div>${renderTagList(keywords, '暂无明显技术关键词')}</div>
+        <div style="margin:8px 0 4px;"><b>风险点：</b></div>
+        <div>${renderTagList(result.riskFlags, '暂无明显风险点')}</div>
+        <div style="margin:10px 0 8px;"><b>简短理由：</b>${escapeHtml(result.reason)}</div>
+        <button id="job-fit-copy" style="width:100%;border:none;background:${color};color:#fff;border-radius:8px;padding:8px 10px;cursor:pointer;font-weight:700;">复制岗位分析</button>
+        <button id="job-fit-ai-analyze" ${jobFitAiLoading ? 'disabled' : ''} style="width:100%;margin-top:8px;border:none;background:#111827;color:#fff;border-radius:8px;padding:8px 10px;cursor:${jobFitAiLoading ? 'not-allowed' : 'pointer'};font-weight:700;opacity:${jobFitAiLoading ? '.65' : '1'};">${jobFitAiLoading ? '分析中...' : 'AI 深度核验'}</button>
+        <div id="job-fit-copy-tip" style="margin-top:6px;color:#6b7280;font-size:12px;"></div>
+        <div id="job-fit-ai-result">
+          ${renderJobHistoryPanel()}
+          ${renderAiAnalyzeResult(jobFitAiResult, jobFitAiError, jobFitAiLoading)}
+          ${renderFeedbackPanel(jobFitAiResult)}
+        </div>
+        <div style="margin-top:10px;color:#6b7280;font-size:12px;border-top:1px solid #e5e7eb;padding-top:8px;">
+          仅分析当前页面可见文本，不自动投递，不自动发消息
+        </div>
+      </div>
+    `;
+
+    bindFeedbackDraftEvents();
+    loadJobHistoryForResult(result, false);
+
+    document.getElementById('job-fit-toggle').onclick = () => {
+      jobFitCollapsed = !jobFitCollapsed;
+      renderJobFitPanel(jobFitLastResult);
+    };
+
+    const copyBtn = document.getElementById('job-fit-copy');
+    if (copyBtn) {
+      copyBtn.onclick = () => {
+        const ok = copyText(buildJobAnalysisText(jobFitLastResult));
+        const tip = document.getElementById('job-fit-copy-tip');
+        if (tip) tip.textContent = ok ? '已复制到剪贴板。' : '复制失败，请手动复制。';
+      };
+    }
+
+    const aiBtn = document.getElementById('job-fit-ai-analyze');
+    if (aiBtn) {
+      aiBtn.onclick = async () => {
+        if (jobFitAiLoading || !jobFitLastResult) return;
+
+        jobFitAiLoading = true;
+        jobFitAiError = '';
+        jobFitAiResult = null;
+        jobFitFeedbackSaving = false;
+        jobFitFeedbackSaved = false;
+        jobFitFeedbackError = '';
+        jobFitFeedbackLastResponse = null;
+        resetFeedbackDraft();
+        renderJobFitPanel(jobFitLastResult);
+
+        try {
+          const payload = buildAiAnalyzePayload(jobFitLastResult.jobInfo, jobFitLastResult);
+          jobFitAiResult = await callAiAnalyzeBackend(payload);
+        } catch (e) {
+          jobFitAiError = '后端未启动或接口调用失败。请确认 backend 服务已在 http://localhost:8080 启动。';
+        } finally {
+          jobFitAiLoading = false;
+          renderJobFitPanel(jobFitLastResult);
+        }
+      };
+    }
+
+    const feedbackBtn = document.getElementById('job-fit-feedback-save');
+    if (feedbackBtn) {
+      feedbackBtn.onclick = async () => {
+        if (jobFitFeedbackSaving || !jobFitAiResult) return;
+
+        const payload = buildFeedbackPayload(jobFitAiResult);
+        if (!payload.jobRecordId && !payload.taskId) {
+          jobFitFeedbackError = '缺少 jobRecordId 和 taskId，无法保存反馈。';
+          jobFitFeedbackSaved = false;
+          renderJobFitPanel(jobFitLastResult);
+          return;
+        }
+
+        jobFitFeedbackSaving = true;
+        jobFitFeedbackSaved = false;
+        jobFitFeedbackError = '';
+        feedbackBtn.disabled = true;
+        feedbackBtn.textContent = '保存中...';
+
+        try {
+          jobFitFeedbackLastResponse = await callSaveJobFeedback(payload);
+          jobFitFeedbackSaved = true;
+          loadJobHistoryForResult(jobFitLastResult, true);
+        } catch (e) {
+          jobFitFeedbackError = '反馈保存失败，请确认后端已启动。';
+        } finally {
+          jobFitFeedbackSaving = false;
+          renderJobFitPanel(jobFitLastResult);
+        }
+      };
+    }
+  }
+
+  function updateJobFitPanel() {
+    const detailContainer = findJobDetailContainer();
+    const jobInfo = extractJobInfoFromDetail(detailContainer);
+    if (!jobInfo.jdText || jobInfo.jdText.length < 30) return;
+    renderJobFitPanel(scoreJob(jobInfo));
+  }
+
+  function observeJobDetailChanges() {
+    const isOwnPanelMutation = mutation => {
+      const target = mutation && mutation.target;
+      if (!target) return false;
+      const el = target.nodeType === Node.ELEMENT_NODE ? target : target.parentElement;
+      return Boolean(el && el.closest && (el.closest('#job-fit-scoring-panel') || el.closest('#boss-export-panel')));
+    };
+
+    const debouncedUpdate = mutations => {
+      if (Array.isArray(mutations) && mutations.length && mutations.every(isOwnPanelMutation)) {
+        return;
+      }
+      clearTimeout(jobFitTimer);
+      jobFitTimer = setTimeout(updateJobFitPanel, 500);
+    };
+
+    setTimeout(updateJobFitPanel, 1500);
+
+    const observer = new MutationObserver(debouncedUpdate);
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      characterData: true
+    });
+  }
+
   function addButton() {
     if (document.getElementById('boss-export-btn')) return;
 
@@ -607,4 +2821,53 @@
 
   setTimeout(addButton, 2000);
   setInterval(addButton, 3000);
+  loadScoringConfigFromBackend().then(() => {
+    if (document.body) updateJobFitPanel();
+  });
+  observeJobDetailChanges();
+
+  window.JobFitScoring = {
+    loadScoringConfigFromBackend,
+    mergeScoringConfig,
+    scoreActiveScoringConfig,
+    getVisibleJobText,
+    findJobDetailContainer,
+    findJobHeaderBlock,
+    extractJobTitleFromHeader,
+    extractSalaryFromHeader,
+    extractSalaryByGeometry,
+    extractCityFromMetaLine,
+    cleanJobTitle,
+    isSearchConditionText,
+    findJobTitleElement,
+    getElementOwnText,
+    collectVisibleSalaryCandidates,
+    findVisibleTextNodes,
+    isVisibleElement,
+    isLikelySalaryText,
+    extractJobInfoFromDetail,
+    parseSalary,
+    parseExperience,
+    parseEducation,
+    parseScheduleAndDuration,
+    extractTags,
+    scoreJob,
+    detectDirection,
+    detectRiskFlags,
+    detectMatchedKeywords,
+    getConclusion,
+    getGreetingType,
+    buildAiAnalyzePayload,
+    callAiAnalyzeBackend,
+    buildFeedbackPayload,
+    callSaveJobFeedback,
+    renderFeedbackPanel,
+    renderFeedbackStatus,
+    resetFeedbackDraft,
+    updateFeedbackDraftFromDom,
+    bindFeedbackDraftEvents,
+    renderAiAnalyzeResult,
+    renderJobFitPanel,
+    observeJobDetailChanges
+  };
 })();

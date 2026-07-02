@@ -1,0 +1,31 @@
+spring:
+  application:
+    name: ai-job-screening-agent-backend
+  datasource:
+    url: ${MYSQL_URL:jdbc:mysql://localhost:3306/ai_job_agent?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false}
+    username: ${MYSQL_USERNAME:root}
+    password: ${MYSQL_PASSWORD:}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 3s
+
+server:
+  port: 8080
+
+llm:
+  provider: deepseek
+  base-url: https://api.deepseek.com
+  api-key: ${DEEPSEEK_API_KEY:}
+  model: deepseek-chat
+  timeout-seconds: 30
+  enabled: true
+
+job-analysis:
+  cache:
+    enabled: true
+    ttl-hours: 72
+    key-prefix: "ai-job-agent:analysis:"

@@ -1,179 +1,158 @@
-# AI Job Application Tracker Toolkit
-> AI 辅助求职跟进工具包
+# AI Job Screening Agent / BOSS 求职 Agent
 
-This is a local-first personal job application tracking toolkit.
+面向 Java 后端 / AI 应用开发实习求职场景的用户画像驱动岗位筛选 Agent。
 
-它是一个本地优先的个人求职跟进工具包，用于整理投递记录、聊天状态、AI 分析结果、每日复盘和面试复盘。
+本项目把浏览器页面可见岗位信息、本地规则评分、AI 深度核验、MySQL 记录、Redis 缓存、用户画像配置和 RAG-Lite 检索串成一条个人求职跟进链路。它的目标不是替用户操作招聘平台，而是帮助用户更稳定地判断岗位是否值得投、为什么值得投、后续如何跟进。
 
-The toolkit has three core parts:
+## Features
 
-本项目由三部分组成：
+- BOSS 页面规则评分：userscript 只读取当前页面可见 DOM 文本，在页面右下角展示岗位匹配度。
+- AI 深度核验：用户主动点击后，请求本地 Spring Boot 后端做进一步分析。
+- DeepSeek 分析：后端通过 OpenAI-compatible 接口调用 DeepSeek，返回结构化结论。
+- Redis 缓存去重：相同岗位和同一用户画像版本下复用分析结果。
+- MySQL 落库：保存岗位记录、AI 分析结果和投递反馈。
+- 投递反馈闭环：保存投递、沟通、面试和放弃原因。
+- 用户画像 scoring config：后端根据用户画像生成并确认个性化评分配置。
+- Profile RAG-Lite：将用户画像、历史分析和反馈整理为 chunk，用关键词检索增强 AI Prompt。
+- profileRag 命中证据：AI 分析结果返回画像命中资料，便于解释分析依据。
+- 历史记录查询：支持最近记录、详情、搜索和相似岗位匹配。
+- 字段清洗与历史匹配优化：降低脏 companyName、长 JD 片段对历史记录和 RAG chunk 的影响。
 
-- Excel tracker template / 求职跟进 Excel 模板
-- Chat status export userscript / 聊天状态导出用户脚本
-- AI prompt workflow / AI 分析提示词工作流
+## Architecture
 
-## Overview / 项目简介
-
-AI Job Application Tracker Toolkit helps job seekers organize application progress, communication status, follow-up actions, and interview review notes in a structured local workflow.
-
-AI 辅助求职跟进工具包面向个人求职场景，帮助你用 Excel、用户脚本和 AI 提示词，把岗位筛选、投递记录、聊天状态、后续动作和面试复盘串成一个清晰流程。
-
-## Why This Project / 为什么做这个项目
-
-When applications increase, status tracking can become messy. It is hard to remember which jobs were contacted, which messages were read, which opportunities received replies, and which ones already ended.
-
-投递岗位变多以后，状态很容易混乱：哪些已读、哪些送达、哪些有回复、哪些已经拒绝，靠截图和手动记忆都不稳定。
-
-This project helps with:
-
-这个项目主要解决：
-
-- application status becomes messy after many submissions / 投递多后状态混乱
-- read, delivered, replied, and rejected states are hard to track / 已读、送达、回复、拒绝难跟踪
-- screenshot-based AI analysis is inconvenient / 截图给 AI 分析比较麻烦
-- interview review notes are often unstructured / 面试复盘不够结构化
-- application count alone does not show reply rate, interview rate, or rejection reasons / 只看投递数量，看不到回复率、约面率和拒绝原因
-
-## Features / 功能特性
-
-- Excel job tracker with dropdowns, formulas, conditional formatting, and dashboard metrics  
-  带下拉框、公式、条件格式和仪表盘的求职跟进 Excel 模板
-- Visible chat status export userscript for TSV output  
-  将页面已展示的聊天状态整理为 TSV 的用户脚本
-- AI prompts for job screening, chat analysis, tracker updates, daily review, interview review, and HR replies  
-  覆盖岗位筛选、聊天分析、表格更新、每日复盘、面试复盘和 HR 回复的 AI 提示词
-- Mock examples for public GitHub demonstration  
-  适合公开仓库展示的 mock 示例数据
-- Local-first workflow for personal job-search management  
-  本地优先的个人求职跟进流程
-
-## Workflow / 工作流
-
-```text
-Job Screening → Excel Tracker → Chat Status Export → AI Analysis → Tracker Update → Daily Review → Interview Review
+```mermaid
+flowchart TD
+  A["BOSS 当前页面可见 DOM"] --> B["Tampermonkey userscript"]
+  B --> C["本地规则评分"]
+  B --> D["用户点击 AI 深度核验"]
+  D --> E["POST /api/job/analyze"]
+  E --> F{"Redis cache hit?"}
+  F -- "yes" --> G["返回缓存分析结果"]
+  F -- "no" --> H["字段清洗 + 保存 job_record"]
+  H --> I["Profile RAG-Lite 检索 user_profile_chunk"]
+  I --> J["DeepSeek OpenAI-compatible LLM"]
+  J --> K["保存 job_analysis"]
+  K --> L["写入 Redis 分析缓存"]
+  G --> B
+  L --> B
+  B --> M["用户保存投递反馈"]
+  M --> N["POST /api/job/feedback"]
+  N --> O["MySQL job_feedback"]
+  O --> P["POST /api/profile/reindex?includeHistory=true"]
+  P --> I
 ```
 
-1. Screen jobs with AI prompts before adding them to the tracker.  
-   使用 AI 提示词先筛选岗位，再决定是否加入表格。
-2. Record selected jobs in the Excel tracker.  
-   在 Excel 跟进表中记录公司、岗位、平台、状态和下一步动作。
-3. Export visible recruitment chat status into TSV when needed.  
-   需要复盘沟通状态时，将页面已展示的聊天状态导出为 TSV。
-4. Analyze the TSV with AI.  
-   使用 AI 按 P0/P1/P2/P9 分析优先级。
-5. Update the tracker with verified results.  
-   人工确认后更新 Excel 表格。
-6. Summarize daily progress.  
-   每天记录投递效果、问题和明日策略。
-7. Review interviews in a structured way.  
-   用结构化字段复盘面试问题、薄弱点和后续准备。
+## Quick Start
 
-## What This Project Is Not / 项目边界
+### 1. Prepare MySQL
 
-This project does not access non-public platform APIs, handle verification or login checks, perform job application actions, or perform message sending actions.
+```sql
+CREATE DATABASE IF NOT EXISTS ai_job_agent
+  DEFAULT CHARACTER SET utf8mb4
+  DEFAULT COLLATE utf8mb4_unicode_ci;
+```
 
-本项目仅用于个人求职过程中的本地记录和页面可见信息整理；不访问非公开接口，不处理验证码或登录校验，不执行投递或消息发送操作，也不做平台数据采集。
+Then run:
 
-The userscript only reads text already displayed on the current browser page and exports it into TSV for personal follow-up.
+```text
+backend/src/main/resources/schema.sql
+```
 
-用户脚本只读取当前浏览器页面中已经展示出来的文本，并将其整理为 TSV，方便个人求职跟进。
+### 2. Prepare Redis
 
-## Quick Start / 快速开始
+```bash
+docker run -d --name ai-job-agent-redis -p 6379:6379 redis:7-alpine
+```
 
-1. Open `templates/job_tracker_template.xlsx`.  
-   打开 `templates/job_tracker_template.xlsx`。
-2. Fill applications in the `Applications` sheet.  
-   在 `Applications` 表中填写投递记录。
-3. Install `userscripts/job-chat-status-export.user.js` in Tampermonkey.  
-   在 Tampermonkey 中安装 `userscripts/job-chat-status-export.user.js`。
-4. Export visible chat status into TSV.  
-   将页面已展示的聊天状态导出为 TSV。
-5. Paste TSV into an AI tool with `prompts/chat_status_analysis_prompt.md`.  
-   使用 `prompts/chat_status_analysis_prompt.md` 让 AI 分析 TSV。
-6. Update the tracker and review the dashboard.  
-   更新表格并查看仪表盘统计。
+If a local Redis instance is already available on `localhost:6379`, it can be reused.
 
-## Directory Structure / 目录结构
+### 3. Configure Environment Variables
+
+Copy `.env.example` locally or configure these variables in your shell:
+
+- `DEEPSEEK_API_KEY`
+- `MYSQL_URL`
+- `MYSQL_USERNAME`
+- `MYSQL_PASSWORD`
+- `REDIS_HOST`
+- `REDIS_PORT`
+- `REDIS_PASSWORD`
+
+Do not commit real API keys, passwords, or `.env` files.
+
+### 4. Start Backend
+
+```bash
+cd backend
+mvn spring-boot:run
+```
+
+Health check:
+
+```bash
+curl http://localhost:8080/api/health
+```
+
+### 5. Install Userscript
+
+1. Install Tampermonkey.
+2. Create a new userscript.
+3. Paste `userscripts/job-chat-status-export.user.js`.
+4. Save and open a BOSS job page.
+5. The job fit panel appears at the bottom right.
+
+## Main Workflow
+
+1. Open a job detail page.
+2. Review local rule scoring and field extraction sources.
+3. Click AI 深度核验.
+4. Review DeepSeek result, profileRag evidence, and history records.
+5. Decide manually whether to apply.
+6. Save application feedback.
+7. Run `POST /api/profile/reindex?includeHistory=true` when you want historical analysis and feedback to enter RAG-Lite.
+
+## Documentation
+
+- [Architecture](docs/architecture.md)
+- [API Reference](docs/api_reference.md)
+- [Demo Walkthrough](docs/demo_walkthrough.md)
+- [Privacy & Compliance](docs/privacy_and_compliance.md)
+- [Roadmap](docs/roadmap.md)
+
+## Compliance Boundary
+
+This project is a local-first personal job-search tracking and analysis tool.
+
+- It only reads DOM text already visible on the current browser page.
+- It does not read BOSS Cookie / Token.
+- It does not access BOSS non-public APIs.
+- It does not bypass verification or login checks.
+- It does not apply to jobs automatically.
+- It does not send messages automatically.
+- It does not perform platform data collection.
+- AI analysis is advisory; the final decision is made manually by the user.
+
+## Current Limitations
+
+- Single-user `default` profile only.
+- RAG-Lite uses keyword retrieval, not embedding.
+- No PDF resume upload or parsing.
+- No Redis Vector, Milvus, or rerank.
+- Salary, company name, city, schedule, and duration extraction may need maintenance if page structure changes.
+- The local rule score is heuristic and should be reviewed manually.
+
+## Directory Structure
 
 ```text
 ai-job-application-tracker-toolkit/
-├─ README.md
+├─ backend/                 Spring Boot backend
+├─ userscripts/             Tampermonkey userscript
+├─ docs/                    Public project documentation
+├─ .env.example             Environment variable template
 ├─ LICENSE
-├─ .gitignore
-├─ userscripts/
-│  └─ job-chat-status-export.user.js
-├─ templates/
-│  ├─ job_tracker_template.xlsx
-│  ├─ job_tracker_fields.md
-│  └─ status_options.md
-├─ prompts/
-│  ├─ job_screening_prompt.md
-│  ├─ chat_status_analysis_prompt.md
-│  ├─ excel_append_prompt.md
-│  ├─ excel_status_update_prompt.md
-│  ├─ daily_review_prompt.md
-│  ├─ interview_review_prompt.md
-│  └─ hr_reply_prompt.md
-├─ docs/
-│  ├─ workflow.md
-│  ├─ excel_design.md
-│  ├─ ai_workflow.md
-│  ├─ status_rules.md
-│  ├─ compliance_boundary.md
-│  └─ resume_project_description.md
-└─ examples/
-   ├─ mock_tracker.xlsx
-   ├─ mock_jobs.csv
-   ├─ mock_chat_export.tsv
-   ├─ mock_ai_input.md
-   ├─ mock_ai_output.md
-   └─ mock_codex_update_prompt.md
+└─ README.md
 ```
 
-## Examples / 示例数据
+## Repository Description
 
-All files under `examples/` use mock data only.
-
-`examples/` 目录下只包含 mock 示例数据。
-
-Included examples:
-
-示例包括：
-
-- `mock_tracker.xlsx`: mock Excel tracker / mock 求职跟进表
-- `mock_jobs.csv`: mock job list / mock 岗位列表
-- `mock_chat_export.tsv`: mock chat status export / mock 聊天状态导出
-- `mock_ai_input.md`: mock AI input / mock AI 输入
-- `mock_ai_output.md`: mock AI output / mock AI 输出
-- `mock_codex_update_prompt.md`: mock update prompt / mock 更新提示词
-
-## Privacy & Compliance / 隐私与合规
-
-Do not upload real chat records, real HR names, real company communication, real contact information, or real screenshots.
-
-请不要上传真实聊天记录、真实 HR 姓名、真实公司沟通内容、真实联系方式或真实截图。
-
-The template workbook is empty. The example workbook uses mock data only.
-
-模板工作簿为空模板；示例工作簿只使用 mock 数据。
-
-## Resume Usage / 简历写法
-
-Suggested resume description:
-
-简历描述示例：
-
-```text
-Built a local-first AI-assisted job application tracking toolkit with an Excel tracker template, dashboard metrics, a visible chat status export userscript, reusable AI prompts, and mock examples for privacy-safe demonstration.
-```
-
-```text
-设计并实现本地优先的 AI 辅助求职跟进工具包，包含 Excel 求职跟进模板、状态统计仪表盘、页面可见聊天状态导出用户脚本、AI 分析提示词和脱敏 mock 示例，用于个人求职过程中的状态整理、跟进管理和面试复盘。
-```
-
-## License / 许可证
-
-MIT License. See [LICENSE](LICENSE).
-
-本项目使用 MIT License，详见 [LICENSE](LICENSE)。
+A profile-driven AI job screening agent for Java backend and AI application internship tracking, with local userscript scoring, Spring Boot backend, DeepSeek analysis, MySQL persistence, Redis cache, and RAG-Lite profile evidence.
