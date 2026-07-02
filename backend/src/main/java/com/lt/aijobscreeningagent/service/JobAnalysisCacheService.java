@@ -37,7 +37,11 @@ public class JobAnalysisCacheService {
   }
 
   public String buildCacheKey(JobAnalyzeRequest request) {
-    return properties.getKeyPrefix() + sha256(String.join("\n",
+    return buildCacheKey(request, "no-profile-index");
+  }
+
+  public String buildCacheKey(JobAnalyzeRequest request, String profileVersion) {
+    return properties.getKeyPrefix() + normalize(profileVersion) + ":" + sha256(String.join("\n",
         normalize(request.jobTitle()),
         normalize(request.companyName()),
         normalize(request.city()),

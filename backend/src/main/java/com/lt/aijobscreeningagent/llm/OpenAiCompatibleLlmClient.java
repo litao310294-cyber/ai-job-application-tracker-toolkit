@@ -35,6 +35,11 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
 
   @Override
   public LlmAnalyzeResult analyze(JobAnalyzeRequest request) {
+    return analyze(request, "");
+  }
+
+  @Override
+  public LlmAnalyzeResult analyze(JobAnalyzeRequest request, String profileContext) {
     if (!properties.isEnabled() || !properties.hasApiKey()) {
       throw new IllegalStateException("LLM is disabled or API key is empty");
     }
@@ -45,7 +50,9 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
           .timeout(Duration.ofSeconds(Math.max(1, properties.getTimeoutSeconds())))
           .header("Authorization", "Bearer " + properties.getApiKey())
           .header("Content-Type", "application/json")
-          .POST(HttpRequest.BodyPublishers.ofString(buildRequestBody(systemPrompt(), userPrompt(request), 1200)))
+          .POST(HttpRequest.BodyPublishers.ofString(
+              buildRequestBody(systemPrompt(), userPrompt(request, profileContext), 1200)
+          ))
           .build();
 
       HttpResponse<String> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
@@ -165,6 +172,10 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         3. NPU / 模型部署项目：模型资产、转换、部署、推理验证。
 
         你必须只返回合法 JSON，不要 Markdown，不要代码块，不要输出 JSON 之外的任何文本。
+        resumeMatches 必须优先基于【用户画像检索资料】中的项目、技能和偏好；如果资料没有提到某项经历，不要编造。
+        risks 可以结合用户画像中的排斥方向、出勤要求和岗位要求判断。
+        suggestedMessage 要结合用户画像中真实技能，例如 Java、Redis、RAG、Agent、Tool Calling 等。
+
         JSON 字段固定为：
         {
           "decision": "优先投|可投|谨慎投|不投",
@@ -183,6 +194,10 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
   }
 
   private String userPrompt(JobAnalyzeRequest request) {
+    return userPrompt(request, "");
+  }
+
+  private String userPrompt(JobAnalyzeRequest request, String profileContext) {
     return """
         请分析以下岗位是否适合当前用户投递。
 
@@ -197,6 +212,8 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
 
         岗位文本：
         %s
+
+        %s
         """.formatted(
         valueOrEmpty(request.jobTitle()),
         valueOrEmpty(request.companyName()),
@@ -206,7 +223,8 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         valueOrEmpty(request.duration()),
         request.ruleScore() == null ? "未提供" : request.ruleScore(),
         valueOrEmpty(request.ruleConclusion()),
-        valueOrEmpty(request.jobText())
+        valueOrEmpty(request.jobText()),
+        valueOrEmpty(profileContext)
     );
   }
 

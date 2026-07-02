@@ -6,37 +6,51 @@ import com.lt.aijobscreeningagent.dto.JobAnalyzeResponse;
 import com.lt.aijobscreeningagent.dto.JobRecordSummary;
 import com.lt.aijobscreeningagent.dto.LlmAnalyzeResult;
 import com.lt.aijobscreeningagent.llm.LlmClient;
+import com.lt.aijobscreeningagent.profile.ProfileSearchChunkResponse;
+import com.lt.aijobscreeningagent.profile.UserProfileRagService;
 import com.lt.aijobscreeningagent.repository.JobRecordRepository;
 import java.util.List;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 @Service
 public class JobAnalysisService {
 
+  private static final Logger log = LoggerFactory.getLogger(JobAnalysisService.class);
+  private static final String DEFAULT_PROFILE_NAME = "default";
+  private static final int PROFILE_RAG_TOP_K = 5;
+
   private final LlmProperties llmProperties;
   private final LlmClient llmClient;
   private final JobRecordRepository jobRecordRepository;
   private final JobAnalysisCacheService jobAnalysisCacheService;
+  private final UserProfileRagService userProfileRagService;
 
   public JobAnalysisService(
       LlmProperties llmProperties,
       LlmClient llmClient,
       JobRecordRepository jobRecordRepository,
-      JobAnalysisCacheService jobAnalysisCacheService
+      JobAnalysisCacheService jobAnalysisCacheService,
+      UserProfileRagService userProfileRagService
   ) {
     this.llmProperties = llmProperties;
     this.llmClient = llmClient;
     this.jobRecordRepository = jobRecordRepository;
     this.jobAnalysisCacheService = jobAnalysisCacheService;
+    this.userProfileRagService = userProfileRagService;
   }
 
   public JobAnalyzeResponse analyze(JobAnalyzeRequest request) {
-    String cacheKey = jobAnalysisCacheService.buildCacheKey(request);
+    String profileVersion = loadProfileVersion();
+    String cacheKey = jobAnalysisCacheService.buildCacheKey(request, profileVersion);
     var cachedResponse = jobAnalysisCacheService.get(cacheKey);
     if (cachedResponse.isPresent()) {
+      log.info("Job analyze Redis cache hit. profileVersion={}", profileVersion);
       return cachedResponse.get();
     }
+    log.info("Job analyze Redis cache miss. profileVersion={}", profileVersion);
 
     String taskId = UUID.randomUUID().toString();
     long jobRecordId = jobRecordRepository.saveJobRecord(request);
@@ -50,7 +64,8 @@ public class JobAnalysisService {
     }
 
     try {
-      LlmAnalyzeResult result = llmClient.analyze(request);
+      String profileContext = buildProfileContext(request);
+      LlmAnalyzeResult result = llmClient.analyze(request, profileContext);
       response = new JobAnalyzeResponse(
           jobRecordId,
           taskId,
@@ -131,5 +146,75 @@ public class JobAnalysisService {
 
   private String valueOrEmpty(String value) {
     return value == null ? "" : value;
+  }
+
+  private String loadProfileVersion() {
+    try {
+      return userProfileRagService.profileVersion(DEFAULT_PROFILE_NAME);
+    } catch (RuntimeException e) {
+      log.warn("Failed to load profile version, use fallback cache namespace.");
+      return "profile-version-unavailable";
+    }
+  }
+
+  private String buildProfileContext(JobAnalyzeRequest request) {
+    String profileQuery = buildProfileQuery(request);
+    try {
+      log.info("Profile RAG query: {}", abbreviate(profileQuery, 300));
+      List<ProfileSearchChunkResponse> chunks = userProfileRagService.searchProfileChunks(
+          DEFAULT_PROFILE_NAME,
+          profileQuery,
+          PROFILE_RAG_TOP_K
+      );
+      log.info("Profile RAG retrieved {} chunks.", chunks.size());
+      return formatProfileContext(chunks);
+    } catch (RuntimeException e) {
+      log.warn("Profile RAG search failed, continue analyze without profile chunks.");
+      return noProfileContext();
+    }
+  }
+
+  private String buildProfileQuery(JobAnalyzeRequest request) {
+    return String.join(" ",
+        valueOrEmpty(request.jobTitle()),
+        valueOrEmpty(request.city()),
+        valueOrEmpty(request.schedule()),
+        valueOrEmpty(request.duration()),
+        request.ruleScore() == null ? "" : String.valueOf(request.ruleScore()),
+        valueOrEmpty(request.ruleConclusion()),
+        valueOrEmpty(request.jobText())
+    ).trim();
+  }
+
+  private String formatProfileContext(List<ProfileSearchChunkResponse> chunks) {
+    if (chunks == null || chunks.isEmpty()) {
+      return noProfileContext();
+    }
+
+    StringBuilder builder = new StringBuilder("【用户画像检索资料】\n");
+    for (int i = 0; i < chunks.size(); i++) {
+      ProfileSearchChunkResponse chunk = chunks.get(i);
+      builder.append("资料").append(i + 1).append("：\n");
+      builder.append("标题：").append(valueOrEmpty(chunk.title())).append("\n");
+      builder.append("内容：").append(valueOrEmpty(chunk.content())).append("\n");
+      builder.append("来源：").append(valueOrEmpty(chunk.sourceType())).append("\n");
+      builder.append("匹配分：").append(chunk.score()).append("\n\n");
+    }
+    return builder.toString().trim();
+  }
+
+  private String noProfileContext() {
+    return """
+        【用户画像检索资料】
+        未检索到相关用户画像资料，请仅基于岗位信息、规则评分和已有背景进行保守分析，不要编造用户经历。
+        """;
+  }
+
+  private String abbreviate(String value, int maxLength) {
+    String normalized = valueOrEmpty(value).replaceAll("\\s+", " ").trim();
+    if (normalized.length() <= maxLength) {
+      return normalized;
+    }
+    return normalized.substring(0, maxLength) + "...";
   }
 }

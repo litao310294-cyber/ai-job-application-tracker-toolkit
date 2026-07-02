@@ -5,6 +5,7 @@ import java.sql.Statement;
 import java.sql.Timestamp;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
@@ -102,6 +103,10 @@ public class UserProfileRagRepository {
   }
 
   public List<UserProfileChunk> findDefaultChunks() {
+    return findChunksByProfileName(DEFAULT_PROFILE_NAME);
+  }
+
+  public List<UserProfileChunk> findChunksByProfileName(String profileName) {
     return jdbcTemplate.query("""
         select
           id,
@@ -117,7 +122,26 @@ public class UserProfileRagRepository {
         from user_profile_chunk
         where profile_name = ?
         order by chunk_index asc, id asc
-        """, mapper(), DEFAULT_PROFILE_NAME);
+        """, mapper(), profileName);
+  }
+
+  public Optional<String> findLatestProfileVersion(String profileName) {
+    List<String> versions = jdbcTemplate.query("""
+        select
+          case
+            when content_hash is not null and content_hash <> '' then content_hash
+            when updated_at is not null then date_format(updated_at, '%Y-%m-%dT%H:%i:%s')
+            else cast(id as char)
+          end as profile_version
+        from user_profile_document
+        where profile_name = ?
+        order by updated_at desc, id desc
+        limit 1
+        """,
+        (rs, rowNum) -> rs.getString("profile_version"),
+        profileName
+    );
+    return versions.stream().findFirst();
   }
 
   private RowMapper<UserProfileChunk> mapper() {

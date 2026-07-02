@@ -83,17 +83,31 @@ public class UserProfileRagService {
       return new ProfileSearchResponse(false, "", limit, List.of());
     }
 
+    List<ProfileSearchChunkResponse> chunks = searchProfileChunks("default", normalizedQuery, limit);
+    return new ProfileSearchResponse(!userProfileRagRepository.findDefaultChunks().isEmpty(), normalizedQuery, limit, chunks);
+  }
+
+  public List<ProfileSearchChunkResponse> searchProfileChunks(String profileName, String query, int topK) {
+    int limit = normalizeTopK(topK);
+    String normalizedQuery = normalize(query);
+    if (normalizedQuery.isBlank()) {
+      return List.of();
+    }
+
     List<String> terms = tokenize(normalizedQuery);
-    List<UserProfileChunk> indexedChunks = userProfileRagRepository.findDefaultChunks();
-    List<ProfileSearchChunkResponse> chunks = indexedChunks.stream()
+    List<UserProfileChunk> indexedChunks = userProfileRagRepository.findChunksByProfileName(profileName);
+    return indexedChunks.stream()
         .map(chunk -> toSearchResponse(chunk, terms))
         .filter(chunk -> chunk.score() > 0)
         .sorted(Comparator.comparingInt(ProfileSearchChunkResponse::score).reversed()
             .thenComparing(ProfileSearchChunkResponse::id))
         .limit(limit)
         .toList();
+  }
 
-    return new ProfileSearchResponse(!indexedChunks.isEmpty(), normalizedQuery, limit, chunks);
+  public String profileVersion(String profileName) {
+    return userProfileRagRepository.findLatestProfileVersion(profileName)
+        .orElse("no-profile-index");
   }
 
   private ProfileSearchChunkResponse toSearchResponse(UserProfileChunk chunk, List<String> terms) {
