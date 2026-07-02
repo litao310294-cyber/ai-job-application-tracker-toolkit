@@ -660,6 +660,96 @@ Rerank
 
 ---
 
+### 阶段 6：历史查询 + 反馈反哺 RAG + 当前岗位历史提醒
+
+第 6 阶段目标是把已经沉淀在 `job_record / job_analysis / job_feedback` 中的历史岗位分析和投递反馈重新组织起来，形成闭环：
+
+```text
+历史岗位分析 / 投递反馈
+  ↓
+只读历史查询接口
+  ↓
+可选进入 Profile RAG-Lite
+  ↓
+AI 深度核验可参考历史偏好和反馈
+  ↓
+userscript 当前岗位面板提示历史记录
+```
+
+#### 第 6.1：历史岗位查询接口
+
+新增只读接口：
+
+```http
+GET /api/jobs/recent?limit=20
+GET /api/jobs/{jobRecordId}
+GET /api/jobs/search?keyword=大模型&limit=20
+GET /api/jobs/match?companyName=xxx&jobTitle=xxx
+```
+
+接口基于现有 `job_record / job_analysis / job_feedback` 表，不改变原有分析和反馈保存流程。返回字段包括岗位基本信息、AI 分析结论、解析后的 reasons / risks / resumeMatches / interviewFocus，以及最近一次投递反馈状态。
+
+#### 第 6.2：历史分析 / 投递反馈进入 RAG-Lite
+
+`POST /api/profile/reindex` 默认行为保持不变，只重建用户画像 chunk。
+
+新增可选参数：
+
+```http
+POST /api/profile/reindex?includeHistory=true
+```
+
+当 `includeHistory=true` 时，会在原有用户画像 chunk 基础上追加最近 50 条历史记录生成的 chunk：
+
+```text
+标题：历史投递反馈 - {companyName} - {jobTitle}
+内容：
+公司、岗位、城市、薪资、出勤周期
+AI 判断、AI 分数、方向
+投递状态、沟通状态、面试状态
+用户备注、主要风险、简历匹配点
+sourceType：job_history 或 feedback_history
+```
+
+reindex 仍按 `profileName` 幂等重建，不会无限追加 document/chunk。
+
+#### 第 6.3：userscript 展示当前岗位历史记录
+
+userscript 当前识别出公司名和岗位名后，会调用：
+
+```http
+GET http://localhost:8080/api/jobs/match?companyName=...&jobTitle=...
+```
+
+如果有历史记录，会在右侧岗位匹配度面板中展示「历史记录」模块，最多显示最近 3 条：
+
+```text
+最近分析时间
+AI 判断 / AI 分数
+投递状态 / 沟通状态 / 面试状态
+备注摘要
+jobRecordId
+```
+
+后端不可用或无历史记录时静默处理，不影响评分面板、AI 深度核验、画像命中证据、投递反馈保存和聊天导出。
+
+#### 第 6 阶段仍未实现的边界
+
+```text
+PDF 上传
+embedding
+Redis Vector
+Milvus
+Rerank
+多用户登录
+自动投递
+自动发消息
+读取 BOSS Cookie / Token
+访问 BOSS 非公开接口
+```
+
+---
+
 ## 4. 建议数据表
 
 ### user_profile

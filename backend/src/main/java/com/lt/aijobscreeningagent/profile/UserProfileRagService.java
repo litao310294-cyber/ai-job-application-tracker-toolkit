@@ -10,6 +10,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Pattern;
+import com.lt.aijobscreeningagent.dto.JobHistoryRecord;
+import com.lt.aijobscreeningagent.repository.JobHistoryRepository;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -23,17 +25,25 @@ public class UserProfileRagService {
 
   private final UserProfileRepository userProfileRepository;
   private final UserProfileRagRepository userProfileRagRepository;
+  private final JobHistoryRepository jobHistoryRepository;
 
   public UserProfileRagService(
       UserProfileRepository userProfileRepository,
-      UserProfileRagRepository userProfileRagRepository
+      UserProfileRagRepository userProfileRagRepository,
+      JobHistoryRepository jobHistoryRepository
   ) {
     this.userProfileRepository = userProfileRepository;
     this.userProfileRagRepository = userProfileRagRepository;
+    this.jobHistoryRepository = jobHistoryRepository;
   }
 
   @Transactional
   public ProfileReindexResponse reindexDefaultProfile() {
+    return reindexDefaultProfile(false);
+  }
+
+  @Transactional
+  public ProfileReindexResponse reindexDefaultProfile(boolean includeHistory) {
     UserProfile profile = userProfileRepository.findDefault()
         .orElseThrow(() -> new ResponseStatusException(
             HttpStatus.BAD_REQUEST,
@@ -41,7 +51,10 @@ public class UserProfileRagService {
         ));
     String profileName = profile.profileName();
 
-    Map<String, String> chunks = buildChunkMap(profile);
+    List<ChunkDraft> chunks = buildChunkDrafts(profile);
+    if (includeHistory) {
+      chunks.addAll(buildHistoryChunkDrafts());
+    }
     String rawText = buildRawText(chunks);
 
     UserProfileRagRepository.DeletedIndexCount deletedIndexCount =
@@ -49,8 +62,8 @@ public class UserProfileRagService {
     Long documentId = userProfileRagRepository.saveDocument(profileName, rawText, sha256(rawText));
 
     int index = 0;
-    for (Map.Entry<String, String> entry : chunks.entrySet()) {
-      String content = normalize(entry.getValue());
+    for (ChunkDraft chunk : chunks) {
+      String content = normalize(chunk.content());
       if (content.isBlank()) {
         continue;
       }
@@ -58,10 +71,11 @@ public class UserProfileRagService {
           profileName,
           documentId,
           index,
-          entry.getKey(),
+          chunk.title(),
           content,
-          sha256(entry.getKey() + "\n" + content),
-          scoreHint(entry.getKey())
+          sha256(chunk.title() + "\n" + content),
+          scoreHint(chunk.title()),
+          chunk.sourceType()
       );
       index++;
     }
@@ -153,12 +167,75 @@ public class UserProfileRagService {
     return chunks;
   }
 
-  private String buildRawText(Map<String, String> chunks) {
+  private List<ChunkDraft> buildChunkDrafts(UserProfile profile) {
+    return buildChunkMap(profile).entrySet().stream()
+        .map(entry -> new ChunkDraft(entry.getKey(), entry.getValue(), "manual_profile"))
+        .collect(ArrayList::new, ArrayList::add, ArrayList::addAll);
+  }
+
+  private List<ChunkDraft> buildHistoryChunkDrafts() {
+    return jobHistoryRepository.findRecentForRag(50).stream()
+        .map(record -> new ChunkDraft(historyChunkTitle(record), historyChunkContent(record), historySourceType(record)))
+        .toList();
+  }
+
+  private String historyChunkTitle(JobHistoryRecord record) {
+    return "历史投递反馈 - %s - %s".formatted(
+        normalize(record.companyName()).isBlank() ? "未知公司" : normalize(record.companyName()),
+        normalize(record.jobTitle()).isBlank() ? "未知岗位" : normalize(record.jobTitle())
+    );
+  }
+
+  private String historyChunkContent(JobHistoryRecord record) {
+    return """
+        公司：%s
+        岗位：%s
+        城市：%s
+        薪资：%s
+        出勤周期：%s / %s
+        AI 判断：%s
+        AI 分数：%s
+        方向：%s
+        投递状态：%s
+        沟通状态：%s
+        面试状态：%s
+        用户备注：%s
+        主要风险：%s
+        简历匹配点：%s
+        """.formatted(
+        fallback(record.companyName(), "未记录"),
+        fallback(record.jobTitle(), "未记录"),
+        fallback(record.city(), "未记录"),
+        fallback(record.salary(), "未记录"),
+        fallback(record.schedule(), "未记录"),
+        fallback(record.duration(), "未记录"),
+        fallback(record.aiDecision(), "未记录"),
+        record.aiScore() == null ? "未记录" : record.aiScore(),
+        fallback(record.aiDirection(), "未记录"),
+        fallback(record.applyStatus(), "未记录"),
+        fallback(record.chatStatus(), "未记录"),
+        fallback(record.interviewStatus(), "未记录"),
+        fallback(record.feedbackNote(), "无"),
+        String.join("；", record.risks() == null ? List.of() : record.risks()),
+        String.join("；", record.resumeMatches() == null ? List.of() : record.resumeMatches())
+    ).trim();
+  }
+
+  private String historySourceType(JobHistoryRecord record) {
+    return normalize(record.feedbackNote()).isBlank()
+        && normalize(record.applyStatus()).isBlank()
+        && normalize(record.chatStatus()).isBlank()
+        && normalize(record.interviewStatus()).isBlank()
+        ? "job_history"
+        : "feedback_history";
+  }
+
+  private String buildRawText(List<ChunkDraft> chunks) {
     StringBuilder builder = new StringBuilder();
-    chunks.forEach((title, content) -> {
-      String normalized = normalize(content);
+    chunks.forEach(chunk -> {
+      String normalized = normalize(chunk.content());
       if (!normalized.isBlank()) {
-        builder.append("【").append(title).append("】\n");
+        builder.append("【").append(chunk.title()).append("】\n");
         builder.append(normalized).append("\n\n");
       }
     });
@@ -194,6 +271,11 @@ public class UserProfileRagService {
     return value == null ? "" : value.trim();
   }
 
+  private String fallback(String value, String fallback) {
+    String normalized = normalize(value);
+    return normalized.isBlank() ? fallback : normalized;
+  }
+
   private String sha256(String value) {
     try {
       MessageDigest digest = MessageDigest.getInstance("SHA-256");
@@ -206,5 +288,12 @@ public class UserProfileRagService {
     } catch (NoSuchAlgorithmException e) {
       throw new IllegalStateException("SHA-256 is not available", e);
     }
+  }
+
+  private record ChunkDraft(
+      String title,
+      String content,
+      String sourceType
+  ) {
   }
 }

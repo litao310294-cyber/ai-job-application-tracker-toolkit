@@ -17,8 +17,10 @@ public class UserProfileRagController {
   }
 
   @PostMapping("/reindex")
-  public ProfileReindexResponse reindex() {
-    return userProfileRagService.reindexDefaultProfile();
+  public ProfileReindexResponse reindex(
+      @RequestParam(required = false, defaultValue = "false") boolean includeHistory
+  ) {
+    return userProfileRagService.reindexDefaultProfile(includeHistory);
   }
 
   @GetMapping("/search")

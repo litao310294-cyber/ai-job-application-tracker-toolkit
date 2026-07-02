@@ -655,6 +655,10 @@
   let jobFitAiResult = null;
   let jobFitAiError = '';
   let jobFitAiLoading = false;
+  let jobFitHistoryRecords = [];
+  let jobFitHistoryLoading = false;
+  let jobFitHistoryError = '';
+  let jobFitHistoryKey = '';
   let jobFitFeedbackSaving = false;
   let jobFitFeedbackSaved = false;
   let jobFitFeedbackError = '';
@@ -2038,6 +2042,69 @@
     });
   }
 
+  function callJobHistoryMatchBackend(companyName, jobTitle) {
+    return new Promise((resolve, reject) => {
+      if (typeof GM_xmlhttpRequest !== 'function') {
+        reject(new Error('GM_xmlhttpRequest unavailable'));
+        return;
+      }
+
+      const params = [
+        ['companyName', companyName || ''],
+        ['jobTitle', jobTitle || '']
+      ].map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`).join('&');
+
+      GM_xmlhttpRequest({
+        method: 'GET',
+        url: `http://localhost:8080/api/jobs/match?${params}`,
+        timeout: 8000,
+        onload: response => {
+          if (response.status < 200 || response.status >= 300) {
+            reject(new Error(`HTTP ${response.status}`));
+            return;
+          }
+
+          try {
+            const data = JSON.parse(response.responseText || '[]');
+            resolve(Array.isArray(data) ? data : []);
+          } catch (e) {
+            reject(new Error('Invalid JSON response'));
+          }
+        },
+        onerror: () => reject(new Error('Request failed')),
+        ontimeout: () => reject(new Error('Request timeout'))
+      });
+    });
+  }
+
+  async function loadJobHistoryForResult(result, force) {
+    if (!result) return;
+    const companyName = result.companyPosition && result.companyPosition.company ? result.companyPosition.company : '';
+    const jobTitle = result.companyPosition && result.companyPosition.position ? result.companyPosition.position : '';
+    const historyKey = `${companyName}|${jobTitle}`;
+    if (!companyName && !jobTitle) return;
+    if (!force && (jobFitHistoryLoading || jobFitHistoryKey === historyKey)) return;
+
+    jobFitHistoryKey = historyKey;
+    jobFitHistoryLoading = true;
+    jobFitHistoryError = '';
+
+    try {
+      const records = await callJobHistoryMatchBackend(companyName, jobTitle);
+      if (jobFitHistoryKey !== historyKey) return;
+      jobFitHistoryRecords = records.slice(0, 5);
+    } catch (e) {
+      if (jobFitHistoryKey !== historyKey) return;
+      jobFitHistoryRecords = [];
+      jobFitHistoryError = '历史记录查询失败';
+    } finally {
+      if (jobFitHistoryKey === historyKey) {
+        jobFitHistoryLoading = false;
+        updateFeedbackDraftFromDom();
+        renderJobFitPanel(jobFitLastResult);
+      }
+    }
+  }
 
   function resetFeedbackDraft() {
     jobFitFeedbackDraft = {
@@ -2248,6 +2315,39 @@
     `;
   }
 
+  function renderJobHistoryPanel() {
+    if (jobFitHistoryLoading) {
+      return '<div style="margin-top:8px;color:#6b7280;font-size:12px;">正在查询历史记录...</div>';
+    }
+
+    if (jobFitHistoryError) {
+      return '';
+    }
+
+    const records = Array.isArray(jobFitHistoryRecords) ? jobFitHistoryRecords.slice(0, 3) : [];
+    if (!records.length) {
+      return '';
+    }
+
+    return `
+      <details style="margin-top:8px;padding:8px;border-radius:8px;background:#f8fafc;border:1px solid #e5e7eb;">
+        <summary style="cursor:pointer;font-weight:700;">历史记录</summary>
+        <div style="margin-top:8px;font-size:12px;color:#374151;">
+          ${records.map(record => `
+            <div style="padding:6px 0;border-top:1px solid #eef2f7;">
+              <div style="font-weight:700;">${escapeHtml(record.companyName || '未知公司')} · ${escapeHtml(record.jobTitle || '未知岗位')}</div>
+              <div style="margin-top:3px;color:#6b7280;">最近分析时间：${escapeHtml(compactText(record.createdAt || '', 19) || '未返回')}</div>
+              <div style="margin-top:3px;">AI 判断：${escapeHtml(record.aiDecision || '未返回')} · 分数：${escapeHtml(record.aiScore == null ? '未返回' : record.aiScore)}</div>
+              <div style="margin-top:3px;">投递：${escapeHtml(record.applyStatus || '未记录')} / 沟通：${escapeHtml(record.chatStatus || '未记录')} / 面试：${escapeHtml(record.interviewStatus || '未记录')}</div>
+              <div style="margin-top:3px;">备注：${escapeHtml(compactText(record.feedbackNote || '', 80) || '无')}</div>
+              <div style="margin-top:3px;color:#6b7280;">jobRecordId: ${escapeHtml(record.jobRecordId || '未返回')}</div>
+            </div>
+          `).join('')}
+        </div>
+      </details>
+    `;
+  }
+
   function renderAiAnalyzeResult(result, error, loading) {
     if (loading) {
       return `
@@ -2326,6 +2426,10 @@
       jobFitAiResult = null;
       jobFitAiError = '';
       jobFitAiLoading = false;
+      jobFitHistoryRecords = [];
+      jobFitHistoryLoading = false;
+      jobFitHistoryError = '';
+      jobFitHistoryKey = '';
       jobFitFeedbackSaving = false;
       jobFitFeedbackSaved = false;
       jobFitFeedbackError = '';
@@ -2408,6 +2512,7 @@
         <button id="job-fit-ai-analyze" ${jobFitAiLoading ? 'disabled' : ''} style="width:100%;margin-top:8px;border:none;background:#111827;color:#fff;border-radius:8px;padding:8px 10px;cursor:${jobFitAiLoading ? 'not-allowed' : 'pointer'};font-weight:700;opacity:${jobFitAiLoading ? '.65' : '1'};">${jobFitAiLoading ? '分析中...' : 'AI 深度核验'}</button>
         <div id="job-fit-copy-tip" style="margin-top:6px;color:#6b7280;font-size:12px;"></div>
         <div id="job-fit-ai-result">
+          ${renderJobHistoryPanel()}
           ${renderAiAnalyzeResult(jobFitAiResult, jobFitAiError, jobFitAiLoading)}
           ${renderFeedbackPanel(jobFitAiResult)}
         </div>
@@ -2418,6 +2523,7 @@
     `;
 
     bindFeedbackDraftEvents();
+    loadJobHistoryForResult(result, false);
 
     document.getElementById('job-fit-toggle').onclick = () => {
       jobFitCollapsed = !jobFitCollapsed;
@@ -2482,6 +2588,7 @@
         try {
           jobFitFeedbackLastResponse = await callSaveJobFeedback(payload);
           jobFitFeedbackSaved = true;
+          loadJobHistoryForResult(jobFitLastResult, true);
         } catch (e) {
           jobFitFeedbackError = '反馈保存失败，请确认后端已启动。';
         } finally {

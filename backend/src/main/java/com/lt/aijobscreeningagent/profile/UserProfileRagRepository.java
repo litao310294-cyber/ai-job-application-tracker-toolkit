@@ -78,6 +78,19 @@ public class UserProfileRagRepository {
       String contentHash,
       int scoreHint
   ) {
+    saveChunk(profileName, documentId, chunkIndex, title, content, contentHash, scoreHint, "manual_profile");
+  }
+
+  public void saveChunk(
+      String profileName,
+      Long documentId,
+      int chunkIndex,
+      String title,
+      String content,
+      String contentHash,
+      int scoreHint,
+      String sourceType
+  ) {
     jdbcTemplate.update("""
         insert into user_profile_chunk (
           profile_name,
@@ -96,7 +109,7 @@ public class UserProfileRagRepository {
         chunkIndex,
         title,
         content,
-        "manual_profile",
+        sourceType,
         contentHash,
         scoreHint
     );
