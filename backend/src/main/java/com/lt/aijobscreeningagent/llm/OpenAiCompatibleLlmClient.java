@@ -109,7 +109,8 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
     return baseUrl + "/chat/completions";
   }
 
-  private String buildRequestBody(String systemPrompt, String userPrompt, int maxTokens) throws JsonProcessingException {
+  private String buildRequestBody(String systemPrompt, String userPrompt, int maxTokens)
+      throws JsonProcessingException {
     Map<String, Object> body = Map.of(
         "model", properties.getModel(),
         "temperature", 0.2,
@@ -165,16 +166,14 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
   private String systemPrompt() {
     return """
         你是一个个人求职跟进助手，只负责根据用户提供的岗位页面可见文本做本地化求职初筛建议。
-        用户目标是 Java 后端 / AI 应用开发 / Agent / RAG 相关实习。
-        用户已有项目包括：
-        1. Java 后端项目：Redis、MySQL、Spring Boot、MyBatis、缓存、分布式锁、秒杀等。
-        2. AI 应用项目：RAG、Tool Calling、AI Chat、多轮对话、文档解析。
-        3. NPU / 模型部署项目：模型资产、转换、部署、推理验证。
+        用户背景、技术栈、项目经历、目标方向、城市偏好和排斥方向必须以【用户画像检索资料】为准。
+        如果【用户画像检索资料】没有提到某项技能、项目或经历，不要编造。
+        如果没有检索到用户画像资料，请仅基于岗位信息、规则评分和规则结论做保守分析，并明确避免夸大用户匹配点。
 
         你必须只返回合法 JSON，不要 Markdown，不要代码块，不要输出 JSON 之外的任何文本。
         resumeMatches 必须优先基于【用户画像检索资料】中的项目、技能和偏好；如果资料没有提到某项经历，不要编造。
         risks 可以结合用户画像中的排斥方向、出勤要求和岗位要求判断。
-        suggestedMessage 要结合用户画像中真实技能，例如 Java、Redis、RAG、Agent、Tool Calling 等。
+        suggestedMessage 要结合【用户画像检索资料】中的真实技能和项目；如果资料不足，请给出更通用、保守的中文开场白。
 
         JSON 字段固定为：
         {
@@ -200,7 +199,6 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
   private String userPrompt(JobAnalyzeRequest request, String profileContext) {
     return """
         请分析以下岗位是否适合当前用户投递。
-
         岗位标题：%s
         公司：%s
         薪资：%s

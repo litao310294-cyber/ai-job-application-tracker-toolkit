@@ -1,5 +1,7 @@
 # AI 求职岗位筛选 Agent 平台架构设计
 
+> 本文档是早期架构规划草稿，当前实现状态以 `README.md`、`docs/architecture.md`、`docs/api_reference.md` 为准。
+
 > 当前文档用于后续在 GitHub 新分支中启动 AI Agent 项目改造。  
 > 项目定位：**Java Spring Boot 后端为主体，浏览器脚本作为真实使用入口，结合规则引擎 + RAG + LLM 深度核验 + 投递反馈闭环，构建面向 Java 后端 / AI 应用 / Agent 岗位的智能求职筛选 Agent。**
 

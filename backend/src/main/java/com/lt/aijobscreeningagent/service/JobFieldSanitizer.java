@@ -54,6 +54,9 @@ public class JobFieldSanitizer {
     if (isBlank(value)) {
       return true;
     }
+    if (isPlaceholderCompanyName(value)) {
+      return true;
+    }
     if (isNumberedRequirementSentence(value)) {
       return true;
     }
@@ -63,10 +66,14 @@ public class JobFieldSanitizer {
     if (isLikelyJdSentence(value)) {
       return true;
     }
-    if (value.matches(".*(天/周|个月|本科|硕士|博士|经验不限|Java|后端开发|服务端开发|实习生)$.*")) {
+    if (value.matches(".*(天/周|个月|本科|硕士|博士|经验不限|Java|后端开发|服务端开发|实习生).*")) {
       return true;
     }
     return value.matches("^(未识别|职位|岗位|学历|经验|薪资|地址|工作地址|立即沟通|收藏)$");
+  }
+
+  private boolean isPlaceholderCompanyName(String value) {
+    return value.matches("^(公司|某公司|企业|招聘方|未命名公司)$");
   }
 
   private boolean isLikelyJdSentence(String value) {
@@ -74,7 +81,7 @@ public class JobFieldSanitizer {
   }
 
   private boolean isNumberedRequirementSentence(String value) {
-    return value.matches("^\\s*[一二三四五六七八九十0-9]+[、.．]\\s*.*")
+    return value.matches("^\\s*[一二三四五六七八九十0-9]+[、.．)）\\s-].*")
         && (value.length() > 20 || isLikelyJdSentence(value));
   }
 
