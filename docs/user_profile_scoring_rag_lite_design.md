@@ -575,6 +575,91 @@ scoring_config.updated_at + profile_document.updated_at 的 hash
 
 ---
 
+### 阶段 5 最新收口状态
+
+当前 `feature/ai-job-screening-agent` 分支已经完成 Profile RAG-Lite 在 AI 深度核验链路中的闭环接入。
+
+#### 第 5.1：RAG-Lite 接入 `/api/job/analyze`
+
+```text
+POST /api/job/analyze
+  ↓
+Redis 查缓存
+  ↓
+命中：直接返回缓存结果，不重复检索用户画像
+  ↓
+未命中：
+    1. 使用 jobTitle + city + schedule + duration + ruleScore + ruleConclusion + jobText 构造 profileQuery
+    2. 调用 UserProfileRagService 检索 user_profile_chunk topK，默认 topK=5
+    3. 将命中的用户画像 chunk 拼入 DeepSeek Prompt
+    4. 调用 DeepSeek 生成 AI 深度核验结果
+    5. 保存 job_record / job_analysis
+    6. 将完整 response 写入 Redis
+```
+
+Redis cache key 已纳入 `profileVersion`：
+
+```text
+ai-job-agent:analysis:{profileVersion}:{jobHash}
+```
+
+`profileVersion` 优先使用最新 `user_profile_document.content_hash`，用于避免用户画像 reindex 后继续命中旧分析结果。
+
+#### 第 5.2：`/api/job/analyze` 返回 RAG 命中证据
+
+`/api/job/analyze` response 已新增可选字段 `profileRag`，用于观察本次分析使用到的用户画像资料：
+
+```json
+{
+  "enabled": true,
+  "profileVersion": "...",
+  "query": "...",
+  "chunkCount": 5,
+  "chunks": [
+    {
+      "id": 66,
+      "title": "技能栈",
+      "content": "Java, Spring Boot, MySQL, Redis, RAG, Agent, Tool Calling",
+      "score": 10,
+      "sourceType": "manual_profile"
+    }
+  ],
+  "reason": null
+}
+```
+
+该字段只用于调试和前端展示，不改变原有 `jobRecordId / taskId / status / decision / score / direction / reasons / risks / resumeMatches / interviewFocus / suggestedMessage` 字段含义。
+
+#### 第 5.3：userscript 展示画像命中证据
+
+userscript 的 AI 深度核验结果区域已经新增「画像命中证据」模块：
+
+```text
+是否启用：已启用 / 未启用
+命中数量：chunkCount
+画像版本：profileVersion 前 8 位
+检索 Query：前 80 字
+命中 chunks：最多 5 条，每条展示 title、score、sourceType、content 摘要
+```
+
+如果后端旧缓存或旧版本 response 没有 `profileRag` 字段，前端会保持原 AI 分析展示，不报错、不影响投递反馈保存。
+
+#### 当前仍未实现的边界
+
+```text
+PDF 上传
+embedding
+Redis Vector
+Milvus
+Rerank
+多用户登录
+自动投递
+读取 BOSS Cookie / Token
+访问 BOSS 非公开接口
+```
+
+---
+
 ## 4. 建议数据表
 
 ### user_profile

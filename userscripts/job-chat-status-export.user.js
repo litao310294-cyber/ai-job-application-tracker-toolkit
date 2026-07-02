@@ -2210,6 +2210,44 @@
     ).join('')}</ul>`;
   }
 
+  function compactText(value, maxLength) {
+    const text = String(value || '').replace(/\s+/g, ' ').trim();
+    if (!text || text.length <= maxLength) return text;
+    return `${text.slice(0, maxLength)}...`;
+  }
+
+  function renderProfileRagEvidence(profileRag) {
+    if (!profileRag) return '';
+
+    const enabled = profileRag.enabled === true;
+    const chunks = Array.isArray(profileRag.chunks) ? profileRag.chunks.slice(0, 5) : [];
+    const profileVersion = compactText(profileRag.profileVersion || '', 8) || '未返回';
+    const query = compactText(profileRag.query || '', 80) || '未返回';
+    const chunkCount = Number.isFinite(Number(profileRag.chunkCount)) ? Number(profileRag.chunkCount) : chunks.length;
+    const reason = profileRag.reason ? compactText(profileRag.reason, 120) : '';
+
+    return `
+      <details style="margin-top:10px;padding:8px;border-radius:8px;background:#fff;border:1px solid #e5e7eb;">
+        <summary style="cursor:pointer;font-weight:700;">画像命中证据</summary>
+        <div style="margin-top:8px;font-size:12px;color:#374151;">
+          <div style="margin-bottom:4px;"><b>是否启用：</b>${enabled ? '已启用' : '未启用 / 检索失败'}</div>
+          <div style="margin-bottom:4px;"><b>命中数量：</b>${escapeHtml(chunkCount)}</div>
+          <div style="margin-bottom:4px;"><b>画像版本：</b>${escapeHtml(profileVersion)}</div>
+          <div style="margin-bottom:6px;"><b>检索 Query：</b>${escapeHtml(query)}</div>
+          ${!enabled && reason ? `<div style="margin-bottom:6px;color:#b45309;"><b>原因：</b>${escapeHtml(reason)}</div>` : ''}
+          ${chunks.length ? chunks.map(chunk => `
+            <div style="margin-top:6px;padding-top:6px;border-top:1px solid #f3f4f6;">
+              <div><b>${escapeHtml(chunk.title || '未命名资料')}</b>
+                <span style="color:#6b7280;"> · score ${escapeHtml(chunk.score == null ? '0' : chunk.score)} · ${escapeHtml(chunk.sourceType || 'unknown')}</span>
+              </div>
+              <div style="margin-top:3px;color:#4b5563;line-height:1.45;">${escapeHtml(compactText(chunk.content || '', 120) || '无内容')}</div>
+            </div>
+          `).join('') : '<div style="margin-top:6px;color:#6b7280;">未命中用户画像资料。</div>'}
+        </div>
+      </details>
+    `;
+  }
+
   function renderAiAnalyzeResult(result, error, loading) {
     if (loading) {
       return `
@@ -2252,6 +2290,7 @@
           ${renderCompactList(result.interviewFocus, '暂无')}
           <div style="margin:8px 0 4px;"><b>Suggested Message</b></div>
           <div style="color:#374151;">${escapeHtml(result.suggestedMessage || '暂无')}</div>
+          ${renderProfileRagEvidence(result.profileRag)}
         </div>
       </details>
     `;
