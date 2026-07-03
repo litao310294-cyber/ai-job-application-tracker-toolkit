@@ -18,6 +18,7 @@ AI Job Screening Agent 是一个面向求职场景的 local-first AI 岗位筛�
 - MySQL persistence（历史记录持久化）：保存岗位记录、AI 分析结果、用户画像、RAG-Lite chunk 和投递反馈。
 - Feedback loop（投递反馈闭环）：保存投递状态、沟通状态、面试状态、备注和拒绝原因，可在 reindex 时进入 RAG-Lite。
 - Userscript integration（浏览器脚本集成）：在 BOSS 直聘页面内展示评分、AI 分析结果、历史记录和反馈表单。
+- Optional Follow-up Export（可选沟通状态导出）：单独脚本导出当前页面可见沟通状态，辅助投递后跟进整理。
 
 ## Architecture（系统架构）
 
@@ -150,6 +151,14 @@ curl http://localhost:8080/api/health
 
 打开支持的 BOSS 岗位页面，查看右下角岗位评分面板。需要 AI 深度分析时，手动点击面板中的 AI 分析按钮；分析结果会通过本地后端写入 MySQL，并按配置写入 Redis cache。
 
+## Optional Follow-up Export（可选沟通状态导出）
+
+`userscripts/boss-chat-followup-export.user.js` 是可选辅助脚本，用于整理投递后的沟通状态。它不是 AI Job Screening Agent 的核心岗位筛选链路，也不参与 `Job Page -> Userscript -> Spring Boot API -> Rule Scoring -> Redis Cache -> Profile RAG-Lite -> DeepSeek API -> MySQL -> Analysis Result / Feedback` 主流程。
+
+该模块只读取当前页面可见 DOM 中已经展示的沟通状态信息，并导出为便于人工整理的文本结果。它不读取 Cookie / Token，不访问招聘平台非公开 API，不自动投递，不自动发送消息，也不绕过验证码或反爬机制。
+
+使用方式：将 `userscripts/boss-chat-followup-export.user.js` 作为独立 Userscript 安装，需要整理沟通状态时手动点击页面上的导出按钮。
+
 ## API Overview（接口概览）
 
 - `GET /api/health`：健康检查。
@@ -199,6 +208,7 @@ Screenshots will be added later. 当前仓库没有可引用的截图或 `demo.g
 - [Architecture（系统架构）](docs/architecture.md)
 - [API Reference（接口文档）](docs/api_reference.md)
 - [Demo Walkthrough（演示流程）](docs/demo_walkthrough.md)
+- [Optional Follow-up Export（可选沟通状态导出）](docs/followup_export.md)
 - [Privacy & Compliance（隐私与合规）](docs/privacy_and_compliance.md)
 - [Roadmap（后续规划）](docs/roadmap.md)
 
