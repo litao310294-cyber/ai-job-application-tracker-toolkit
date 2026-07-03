@@ -1,128 +1,70 @@
-# Architecture
+# Architecture（系统架构）
 
-本文档说明 AI Job Screening Agent / BOSS 求职 Agent 的当前架构。项目定位是个人求职跟进辅助工具：前端用户脚本读取当前页面可见 DOM 文本，后端负责 AI 深度核验、缓存、落库、画像检索和历史反馈闭环。
+本文档说明 `ai-job-screening-agent` 当前实现的系统结构。项目定位是 local-first、compliance-aware 的个人岗位筛选辅助工具，不是自动化爬虫系统，也不是复杂多 Agent 平台。
 
-## 总体链路
+## Overall Flow（整体链路）
 
 ```mermaid
 flowchart LR
-  A["BOSS 页面可见 DOM"] --> B["userscript"]
-  B --> C["本地规则评分"]
-  B --> D["AI 深度核验按钮"]
-  D --> E["Spring Boot /api/job/analyze"]
-  E --> F{"Redis cache hit?"}
-  F -- yes --> G["返回缓存分析结果"]
-  F -- no --> H["MySQL 保存 job_record"]
-  H --> I["Profile RAG-Lite keyword search"]
-  I --> J["DeepSeek LLM"]
-  J --> K["MySQL 保存 job_analysis"]
-  K --> L["Redis 缓存完整 response"]
-  B --> M["投递反馈"]
-  M --> N["MySQL job_feedback"]
-  N --> O["includeHistory reindex"]
-  O --> I
+  A["Job Page / BOSS visible page<br/>页面可见 DOM"] --> B["Userscript<br/>boss-job-screening-agent.user.js"]
+  B --> C["Spring Boot API<br/>/api/job/analyze"]
+  C --> D["Rule Scoring<br/>规则评分输入"]
+  C --> E{"Redis Cache<br/>分析结果缓存"}
+  E -- "hit" --> K["Analysis Result<br/>分析结果"]
+  E -- "miss" --> F["Profile RAG-Lite<br/>关键词检索用户画像"]
+  F --> G["DeepSeek API<br/>OpenAI-compatible LLM"]
+  G --> H["MySQL<br/>job_record / job_analysis"]
+  H --> K
+  K --> I["Feedback<br/>投递反馈"]
+  I --> J["MySQL<br/>job_feedback"]
+  J -. "optional reindex" .-> F
 ```
 
-## userscript 层
+## Userscript Layer（浏览器脚本层）
 
-userscript 运行在浏览器页面中，负责：
+Userscript 运行在用户主动打开的岗位页面中，负责读取当前页面可见 DOM 文本，提取岗位字段，展示规则评分面板，并在用户手动点击后调用本地后端接口。
 
-- 读取当前右侧岗位详情区域中的可见文本。
-- 抽取 jobTitle、companyName、salary、city、schedule、duration 等字段。
-- 在页面右下角展示岗位规则评分面板。
-- 主动点击后调用本地后端 `/api/job/analyze`。
-- 展示 AI 深度核验结果、profileRag 画像命中证据、历史记录和投递反馈表单。
-- 保留聊天列表 TSV 导出功能。
+脚本文件：`userscripts/boss-job-screening-agent.user.js`
 
-userscript 不自动调用 AI，不自动投递，不自动发送消息，不读取 Cookie / Token，不访问 BOSS 非公开接口。
+边界：不读取 Cookie / Token，不访问招聘平台非公开 API，不自动投递，不自动发送消息，不绕过验证码或反爬机制。
 
-## Spring Boot 后端层
+## Spring Boot Layer（后端服务层）
 
-后端负责把前端传来的岗位信息转成可追踪的数据闭环：
+后端位于 `backend/`，基于 Spring Boot 3 和 Java 17。主要职责：
 
-- `JobAnalysisService`：岗位 AI 深度核验主流程。
-- `LlmClient`：DeepSeek OpenAI-compatible API 调用。
-- `JobAnalysisCacheService`：Redis 分析结果缓存。
-- `JobRecordRepository` / history repository：岗位记录、分析结果和历史查询。
-- `JobFeedbackRepository`：投递反馈保存和查询。
-- `UserProfileService`：默认用户画像保存与查询。
-- `UserScoringConfigService`：AI 辅助生成并确认评分配置。
-- `UserProfileRagService`：用户画像和历史反馈的 RAG-Lite reindex/search。
-- `JobFieldSanitizer`：保存前兜底清洗 companyName、jobTitle 等字段。
+- `JobAnalysisService`：岗位分析主流程，包含缓存检查、记录保存、Profile RAG-Lite 检索、LLM 调用和 fallback。
+- `OpenAiCompatibleLlmClient`：调用 DeepSeek OpenAI-compatible API。
+- `JobAnalysisCacheService`：使用 Redis 缓存岗位分析结果。
+- `JobRecordRepository` / `JobHistoryRepository`：保存与查询岗位记录、分析结果和历史记录。
+- `JobFeedbackRepository`：保存投递反馈。
+- `UserProfileRagService`：构建和检索 RAG-Lite chunk。
 
-## MySQL 数据层
+## Data Layer（数据层）
 
-MySQL 负责长期沉淀，不承担实时推理：
+MySQL 负责持久化：
 
-- `job_record`：岗位原始字段和规则评分。
-- `job_analysis`：AI 决策、分数、方向、理由、风险和建议话术。
-- `job_feedback`：用户后续投递、沟通、面试和放弃原因。
+- `job_record`：岗位基础字段和规则评分。
+- `job_analysis`：AI 分析结果。
+- `job_feedback`：用户投递反馈。
 - `user_profile`：默认用户画像。
-- `user_scoring_config`：AI 生成并确认的评分配置。
-- `user_profile_document`：RAG-Lite 文档。
-- `user_profile_chunk`：RAG-Lite 检索 chunk。
+- `user_scoring_config`：用户评分配置。
+- `user_profile_document` / `user_profile_chunk`：RAG-Lite 文档和 chunk。
 
-MySQL 是项目的长期记忆层；即使 Redis 过期，历史记录和反馈仍可保留。
+Redis 只缓存岗位分析 response，不保存用户画像本体。缓存 key 会包含 profileVersion，用户画像 reindex 后可自然区分旧缓存。
 
-## Redis 缓存层
+## RAG-Lite Layer（轻量检索增强层）
 
-Redis 缓存的是岗位分析 response，不是用户画像本身。
+当前 RAG-Lite 使用关键词命中，不使用向量数据库、Embedding rerank、Milvus、Chroma 或 Redis Vector。它适合当前用户画像规模小、字段清晰、需要可解释命中证据的场景。
 
-缓存 key 由两部分组成：
+## Tool Calling Boundary（工具调用边界）
 
-- `profileVersion`：当前用户画像文档的内容版本。
-- `jobHash`：岗位请求字段的稳定 hash。
+本项目的 Tool Calling 是轻量 Tool Calling 风格：把岗位查询、画像查询、历史查询和反馈保存等后端能力作为 AI 分析流程可调用的业务工具。当前没有模型自主规划多步骤任务，也没有复杂多 Agent 编排。
 
-这样同一岗位在同一画像版本下可以直接复用分析结果；用户画像 reindex 后，profileVersion 变化，相同岗位可以重新生成更贴近新画像的分析。
+## Compliance Boundary（合规边界）
 
-## DeepSeek LLM 层
-
-DeepSeek 只在用户主动点击“AI 深度核验”后、且 Redis 未命中时调用。Prompt 中包含：
-
-- 岗位基础信息。
-- userscript 本地规则评分和规则结论。
-- Profile RAG-Lite 检索到的用户画像资料。
-- 输出 JSON 字段约束。
-
-如果 LLM 未启用、API Key 为空、调用失败或 JSON 解析失败，后端会 fallback，避免接口直接 500。
-
-## Profile RAG-Lite 层
-
-RAG-Lite 当前使用关键词检索，不使用 embedding，不使用向量数据库。
-
-数据来源包括：
-
-- 手动用户画像。
-- AI 生成评分配置。
-- 历史岗位分析。
-- 投递反馈。
-
-`POST /api/profile/reindex` 会按 profileName 幂等重建：先删除旧 chunk，再删除旧 document，然后重建新的 document 和 chunks。`includeHistory=true` 时会把历史分析和反馈也纳入检索资料，并对历史 companyName/jobTitle 做清洗。
-
-## 历史反馈闭环
-
-用户在页面保存投递反馈后，反馈进入 `job_feedback`。当执行 `POST /api/profile/reindex?includeHistory=true` 时，后端会把历史分析和反馈整理为 chunk。后续 AI 深度核验时，这些 chunk 可能被 profileRag 命中，从而让 AI 能参考过去的投递经验和放弃原因。
-
-## 为什么普通评分不走 RAG
-
-普通评分发生在页面实时浏览阶段，需要快速、稳定、可解释。它只依赖本地规则和已加载的 scoring config，不实时请求后端 RAG。
-
-AI 深度核验是用户主动触发的重分析动作，允许更高延迟，因此适合检索用户画像、拼 Prompt、调用 LLM。
-
-## 为什么 Redis 缓存岗位分析结果而不是用户画像
-
-用户画像保存在 MySQL，并通过 reindex 生成 RAG-Lite document/chunk。Redis 只缓存最终岗位分析 response，用于避免同一岗位重复调用 LLM 和重复落库。画像变化通过 profileVersion 进入缓存 key，而不是把画像本体放进 Redis。
-
-## 为什么第一版 RAG-Lite 不上向量库
-
-当前用户画像规模很小，数据主要是技能、项目、偏好、历史反馈和关键词。关键词检索足够轻量，也方便调试和演示。后续如果画像数据变多，再考虑 embedding、向量库和 rerank。
-
-## 合规边界
-
-- 只读取当前页面可见 DOM 文本。
+- 只读取当前页面可见 DOM。
 - 不读取 Cookie / Token。
-- 不访问 BOSS 非公开接口。
-- 不绕过验证码或登录校验。
-- 不自动投递。
-- 不自动发送消息。
-- 最终是否投递由用户人工决定。
+- 不访问招聘平台非公开 API。
+- 不自动投递或自动发送消息。
+- 不绕过验证码或反爬机制。
+- 不做批量爬取。

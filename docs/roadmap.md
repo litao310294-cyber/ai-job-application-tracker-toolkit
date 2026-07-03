@@ -1,41 +1,23 @@
-# Roadmap
+# Roadmap（后续规划）
 
-This roadmap lists planned improvements. Items here are not implemented unless explicitly marked as completed in README or API documentation.
+本 Roadmap 只列出与当前实现自然衔接的扩展方向，避免把项目描述成未实现的生产级系统。
 
-## Completed
+## Near Term（近期）
 
-- Browser userscript for visible job information extraction.
-- Local rule-based job fit scoring.
-- AI 深度核验 through local Spring Boot backend.
-- DeepSeek OpenAI-compatible LLM integration.
-- MySQL persistence for job records, analysis results, and feedback.
-- Redis cache for job analysis results.
-- User profile and scoring config.
-- Profile RAG-Lite keyword retrieval.
-- RAG-Lite integration with `/api/job/analyze`.
-- profileRag evidence returned by backend and displayed in the userscript.
-- History record query and job match endpoints.
-- Historical analysis and feedback included in RAG-Lite reindex.
-- Field sanitization for dirty companyName / jobTitle values.
+- More structured feedback loop（更结构化反馈闭环）：把投递结果、拒绝原因、面试结果整理成更稳定的字段。
+- Better profile management（更好的用户画像管理）：支持更清晰的默认画像编辑、版本说明和 reindex 提示。
+- Basic dashboard or screenshots（基础看板或截图）：补充岗位评分面板、AI 分析结果、历史记录和 RAG-Lite 命中证据截图。
 
-## Planned
+## Later（后续）
 
-- Manual user profile editing page.
-- Dashboard for application count, reply rate, interview rate, direction distribution, and rejection reasons.
-- Interview review records entering RAG-Lite.
-- Better page extraction resilience when the platform UI changes.
-- Multi-profile or multi-user isolation.
-- PDF resume parsing.
-- embedding-based retrieval.
-- Vector database integration.
-- Rerank for profile evidence retrieval.
+- Optional embedding-based retrieval（可选向量检索）：当用户画像、历史反馈和简历材料变多后，再考虑 Embedding + Vector Store + Rerank。
+- More detailed tool call logging（更细粒度工具调用日志）：扩展 `tool_call_log` 表记录工具名、输入摘要、输出摘要和耗时。
+- Better test coverage（更完整测试覆盖）：补充 service、repository 和关键 fallback 流程测试。
 
-## Not Planned For The Public Demo
+## Not Planned（不计划做的事情）
 
-- Automatic job applications.
-- Automatic message sending.
-- Reading Cookie / Token.
-- Accessing BOSS non-public APIs.
-- Bypassing verification or login checks.
-
-The project should stay focused on personal job-search tracking, visible page information organization, and AI-assisted analysis.
+- 自动投递。
+- 自动发送招聘消息。
+- 批量爬取岗位。
+- 读取 Cookie / Token。
+- 绕过验证码、登录校验或反爬机制。

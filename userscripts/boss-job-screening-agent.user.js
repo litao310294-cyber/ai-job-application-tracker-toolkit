@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Job Chat Status Export Helper
-// @namespace    job-chat-status-export-helper
+// @name         BOSS Job Screening Agent
+// @namespace    ai-job-screening-agent
 // @version      1.3.1
-// @description  Export visible job chat status from the current browser page into TSV format for personal job-search follow-up.
+// @description  Analyze visible job information from the current BOSS page for personal job-search screening.
 // @match        https://www.zhipin.com/*
 // @run-at       document-end
 // @grant        GM_setClipboard

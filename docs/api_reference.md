@@ -1,20 +1,16 @@
-# API Reference
+# API Reference（接口文档）
 
-后端默认地址：`http://localhost:8080`。
+默认后端地址：`http://localhost:8080`
 
-示例中的公司、岗位和反馈均为 mock 数据，不包含真实隐私信息。
+示例中的岗位、公司和反馈均为 mock 数据，不包含真实隐私信息。
 
-## GET /api/health
-
-用途：检查后端服务是否启动。
-
-示例请求：
+## Health Check（健康检查）
 
 ```bash
 curl http://localhost:8080/api/health
 ```
 
-示例返回：
+Response:
 
 ```json
 {
@@ -23,62 +19,54 @@ curl http://localhost:8080/api/health
 }
 ```
 
-注意事项：不依赖 MySQL 业务数据。
+## Analyze Job（岗位分析）
 
-## POST /api/job/analyze
+`POST /api/job/analyze`
 
-用途：对一个岗位进行 AI 深度核验。Redis 未命中时会保存 job_record，检索 Profile RAG-Lite，调用 DeepSeek，保存 job_analysis，并缓存完整 response。
+Redis 未命中时，后端会保存 `job_record`，检索 Profile RAG-Lite，调用 DeepSeek API 或 fallback，并保存 `job_analysis`。
 
-请求体：
+Request:
 
 ```json
 {
-  "jobTitle": "大模型应用开发实习生",
-  "companyName": "示例科技",
-  "salary": "200-300元/天",
-  "city": "北京",
-  "schedule": "5天/周",
-  "duration": "3个月",
-  "jobText": "Java Spring Boot MySQL Redis RAG Agent Tool Calling 大模型应用开发",
+  "jobTitle": "Java Backend Intern",
+  "companyName": "Demo Tech",
+  "salary": "200-300/day",
+  "city": "Shanghai",
+  "schedule": "5 days/week",
+  "duration": "3 months",
+  "jobText": "Java Spring Boot MySQL Redis AI application RAG-Lite",
   "ruleScore": 85,
-  "ruleConclusion": "优先投"
+  "ruleConclusion": "recommended"
 }
 ```
 
-示例请求：
-
-```bash
-curl -X POST "http://localhost:8080/api/job/analyze" \
-  -H "Content-Type: application/json" \
-  -d '{"jobTitle":"大模型应用开发实习生","companyName":"示例科技","salary":"200-300元/天","city":"北京","schedule":"5天/周","duration":"3个月","jobText":"Java Spring Boot MySQL Redis RAG Agent Tool Calling 大模型应用开发","ruleScore":85,"ruleConclusion":"优先投"}'
-```
-
-示例返回：
+Response:
 
 ```json
 {
   "jobRecordId": 1,
-  "taskId": "mock-task-id",
+  "taskId": "generated-task-id",
   "status": "success",
-  "decision": "优先投",
+  "decision": "recommended",
   "score": 86,
-  "direction": "Java后端 + AI应用",
-  "reasons": ["岗位方向与 Java 后端和 AI 应用经历匹配"],
-  "risks": ["需要确认实习周期和导师投入"],
-  "resumeMatches": ["Java", "Spring Boot", "Redis", "RAG", "Agent"],
-  "interviewFocus": ["项目中的缓存设计", "RAG 检索链路"],
-  "suggestedMessage": "您好，我对这个岗位很感兴趣...",
+  "direction": "Java backend + AI application",
+  "reasons": ["Matches Java backend and Redis experience."],
+  "risks": ["Confirm internship schedule and mentor support."],
+  "resumeMatches": ["Java", "Spring Boot", "Redis"],
+  "interviewFocus": ["API design", "cache design"],
+  "suggestedMessage": "Hello, I am interested in this Java backend internship...",
   "profileRag": {
     "enabled": true,
-    "profileVersion": "5bcd6fa7...",
-    "query": "大模型应用开发实习生 北京 ...",
-    "chunkCount": 5,
+    "profileVersion": "profile-version-hash",
+    "query": "Java Backend Intern Shanghai 5 days/week 3 months 85 recommended",
+    "chunkCount": 1,
     "chunks": [
       {
-        "id": 66,
-        "title": "技能栈",
-        "content": "Java, Spring Boot, MySQL, Redis, RAG, Agent, Tool Calling",
-        "score": 10,
+        "id": 12,
+        "title": "Skills",
+        "content": "Java, Spring Boot, MySQL, Redis, RAG-Lite",
+        "score": 8,
         "sourceType": "manual_profile"
       }
     ],
@@ -87,343 +75,50 @@ curl -X POST "http://localhost:8080/api/job/analyze" \
 }
 ```
 
-注意事项：
+If `DEEPSEEK_API_KEY` is empty, LLM is disabled, the remote call fails, or response parsing fails, the endpoint returns a fallback analysis instead of failing the main flow.
 
-- 如果 Redis 命中，会直接返回缓存 response。
-- 如果 LLM 调用失败，会返回 fallback status，不让主接口直接 500。
-- `profileRag` 是可选字段，旧缓存或旧后端返回可能没有。
+## Feedback（投递反馈）
 
-## POST /api/job/feedback
-
-用途：保存用户对岗位分析结果的后续反馈。
-
-请求体：
+`POST /api/job/feedback`
 
 ```json
 {
   "jobRecordId": 1,
-  "taskId": "mock-task-id",
-  "applyStatus": "已投递",
-  "chatStatus": "已沟通",
-  "interviewStatus": "未约面",
-  "feedbackNote": "岗位方向匹配，准备继续跟进。",
+  "taskId": "generated-task-id",
+  "applyStatus": "applied",
+  "chatStatus": "replied",
+  "interviewStatus": "not_scheduled",
+  "feedbackNote": "Role direction matches my backend projects.",
   "rejectReason": ""
 }
 ```
 
-示例请求：
+`GET /api/job/feedback?jobRecordId=1`
 
-```bash
-curl -X POST "http://localhost:8080/api/job/feedback" \
-  -H "Content-Type: application/json" \
-  -d '{"jobRecordId":1,"applyStatus":"已投递","chatStatus":"已沟通","interviewStatus":"未约面","feedbackNote":"岗位方向匹配，准备继续跟进。","rejectReason":""}'
-```
+Returns feedback records for a job.
 
-示例返回：
+## Job History（岗位历史）
 
-```json
-{
-  "id": 1,
-  "jobRecordId": 1,
-  "applyStatus": "已投递",
-  "chatStatus": "已沟通",
-  "interviewStatus": "未约面",
-  "feedbackNote": "岗位方向匹配，准备继续跟进。",
-  "rejectReason": "",
-  "createdAt": "2026-07-02T10:00:00"
-}
-```
+- `GET /api/jobs/recent?limit=20`
+- `GET /api/job/records?limit=20`
+- `GET /api/jobs/{jobRecordId}`
+- `GET /api/jobs/search?keyword=Redis&limit=10`
+- `GET /api/jobs/match?companyName=Demo%20Tech&jobTitle=Java%20Backend%20Intern`
 
-注意事项：如果没有 jobRecordId，可以带 taskId，后端会尝试反查 jobRecordId。
+These endpoints are used by the userscript to show recent records and similar historical jobs.
 
-## GET /api/job/feedback
-
-用途：查询某个岗位记录的反馈列表。
-
-请求参数：
-
-- `jobRecordId`：岗位记录 ID。
-
-示例请求：
-
-```bash
-curl "http://localhost:8080/api/job/feedback?jobRecordId=1"
-```
-
-示例返回：
-
-```json
-[
-  {
-    "id": 1,
-    "jobRecordId": 1,
-    "applyStatus": "已投递",
-    "chatStatus": "已沟通",
-    "interviewStatus": "未约面",
-    "feedbackNote": "岗位方向匹配，准备继续跟进。",
-    "rejectReason": "",
-    "createdAt": "2026-07-02T10:00:00"
-  }
-]
-```
-
-## GET /api/jobs/recent
-
-用途：查询最近岗位分析记录。
-
-请求参数：
-
-- `limit`：返回数量，默认通常为 20。
-
-示例请求：
-
-```bash
-curl "http://localhost:8080/api/jobs/recent?limit=20"
-```
-
-示例返回：
-
-```json
-[
-  {
-    "jobRecordId": 1,
-    "jobTitle": "大模型应用开发实习生",
-    "companyName": "示例科技",
-    "salary": "200-300元/天",
-    "city": "北京",
-    "ruleScore": 85,
-    "ruleConclusion": "优先投",
-    "aiDecision": "优先投",
-    "aiScore": 86,
-    "aiDirection": "Java后端 + AI应用",
-    "status": "success",
-    "createdAt": "2026-07-02T10:00:00"
-  }
-]
-```
-
-## GET /api/job/records
-
-用途：早期版本的最近分析记录查询接口。当前仍保留用于兼容，推荐新展示逻辑优先使用 `/api/jobs/recent`。
-
-请求参数：
-
-- `limit`：返回数量，默认 20，建议范围 1 到 100。
-
-示例请求：
-
-```bash
-curl "http://localhost:8080/api/job/records?limit=20"
-```
-
-示例返回：
-
-```json
-[
-  {
-    "jobRecordId": 1,
-    "jobTitle": "大模型应用开发实习生",
-    "companyName": "示例科技",
-    "salary": "200-300元/天",
-    "city": "北京",
-    "ruleScore": 85,
-    "ruleConclusion": "优先投",
-    "aiDecision": "优先投",
-    "aiScore": 86,
-    "aiDirection": "Java后端 + AI应用",
-    "status": "success",
-    "createdAt": "2026-07-02T10:00:00"
-  }
-]
-```
-
-## GET /api/jobs/{jobRecordId}
-
-用途：查询单条岗位记录详情。
-
-示例请求：
-
-```bash
-curl "http://localhost:8080/api/jobs/1"
-```
-
-示例返回：
-
-```json
-{
-  "jobRecordId": 1,
-  "jobTitle": "大模型应用开发实习生",
-  "companyName": "示例科技",
-  "salary": "200-300元/天",
-  "city": "北京",
-  "ruleScore": 85,
-  "ruleConclusion": "优先投",
-  "aiDecision": "优先投",
-  "aiScore": 86,
-  "aiDirection": "Java后端 + AI应用",
-  "status": "success"
-}
-```
-
-注意事项：不存在时应返回明确错误或空结果，不应影响其他接口。
-
-## GET /api/jobs/search
-
-用途：按关键词搜索历史岗位记录。
-
-请求参数：
-
-- `keyword`：搜索词。
-- `limit`：返回数量。
-
-示例请求：
-
-```bash
-curl "http://localhost:8080/api/jobs/search?keyword=RAG&limit=10"
-```
-
-示例返回：
-
-```json
-[
-  {
-    "jobRecordId": 1,
-    "jobTitle": "大模型应用开发实习生",
-    "companyName": "示例科技",
-    "aiDecision": "优先投",
-    "aiDirection": "Java后端 + AI应用"
-  }
-]
-```
-
-## GET /api/jobs/match
-
-用途：根据当前岗位的 companyName + jobTitle 匹配历史记录。
-
-请求参数：
-
-- `companyName`：公司名，可为空或未识别。
-- `jobTitle`：岗位名。
-
-示例请求：
-
-```bash
-curl "http://localhost:8080/api/jobs/match?companyName=示例科技&jobTitle=大模型应用开发实习生"
-```
-
-示例返回：
-
-```json
-[
-  {
-    "jobRecordId": 1,
-    "jobTitle": "大模型应用开发实习生",
-    "companyName": "示例科技",
-    "aiDecision": "优先投",
-    "createdAt": "2026-07-02T10:00:00"
-  }
-]
-```
-
-注意事项：
-
-- 公司名精确匹配优先。
-- 岗位名精确匹配和包含匹配优先。
-- 脏 companyName 会被降低权重或过滤。
-- 匹配不到时返回空数组。
-
-## GET /api/profile/scoring-config
-
-用途：查询当前 default 用户画像评分配置。
-
-示例请求：
-
-```bash
-curl "http://localhost:8080/api/profile/scoring-config"
-```
-
-示例返回：
-
-```json
-{
-  "exists": true,
-  "profileName": "default",
-  "confirmed": true,
-  "configJson": {
-    "targetRoles": ["Java后端", "AI应用开发"],
-    "positiveKeywords": ["Java", "Spring Boot", "Redis", "RAG"]
-  }
-}
-```
-
-注意事项：不存在时返回 `exists=false` 或类似空状态，不应 500。
-
-## POST /api/profile/reindex
-
-用途：按 default 用户画像幂等重建 RAG-Lite document/chunk。
-
-请求参数：
-
-- `includeHistory`：可选，`true` 时把历史分析和反馈纳入 RAG-Lite。
-
-示例请求：
-
-```bash
-curl -X POST "http://localhost:8080/api/profile/reindex?includeHistory=true"
-```
-
-示例返回：
-
-```json
-{
-  "success": true,
-  "profileName": "default",
-  "documentId": 12,
-  "chunkCount": 9
-}
-```
-
-注意事项：
-
-- reindex 是幂等重建，同一 profileName 不会无限追加旧 document/chunk。
-- 删除顺序是先 chunk 后 document。
-
-## GET /api/profile/search
-
-用途：搜索 Profile RAG-Lite chunk。
-
-请求参数：
-
-- `query`：检索文本。
-- `topK`：返回数量。
-
-示例请求：
-
-```bash
-curl "http://localhost:8080/api/profile/search?query=Java%20Redis%20RAG&topK=5"
-```
-
-示例返回：
-
-```json
-[
-  {
-    "id": 66,
-    "title": "技能栈",
-    "content": "Java, Spring Boot, MySQL, Redis, RAG, Agent, Tool Calling",
-    "score": 10,
-    "sourceType": "manual_profile"
-  }
-]
-```
-
-## Profile 初始化相关接口
-
-项目还包含以下画像初始化接口：
+## Profile（用户画像）
 
 - `POST /api/profile/manual`：保存 default 用户画像。
-- `GET /api/profile/current`：查询当前画像。
-- `POST /api/profile/generate-scoring-config`：调用 LLM 生成评分配置。
-- `POST /api/profile/scoring-config/confirm`：确认当前评分配置。
+- `GET /api/profile/current`：读取当前用户画像。
+- `POST /api/profile/generate-scoring-config`：基于用户画像生成评分配置。
+- `GET /api/profile/scoring-config`：读取评分配置。
+- `POST /api/profile/scoring-config/confirm`：确认评分配置。
+- `POST /api/profile/reindex?includeHistory=true`：重建 RAG-Lite document/chunk，可选择纳入历史分析和反馈。
+- `GET /api/profile/search?query=Java%20Redis&topK=5`：搜索 Profile RAG-Lite chunk。
 
-这些接口通常在首次使用或修改画像时调用，不是每次岗位分析都调用。
+## Notes（说明）
+
+- 当前只支持默认 `default` profile。
+- RAG-Lite 是关键词检索，不是向量数据库方案。
+- 真实密钥、密码、Cookie、Token 不应写入请求示例或提交到仓库。
