@@ -20,6 +20,23 @@ AI Job Screening Agent 是一个面向求职场景的 local-first AI 岗位筛�
 - Userscript integration（浏览器脚本集成）：在 BOSS 直聘页面内展示评分、AI 分析结果、历史记录和反馈表单。
 - Optional Follow-up Export（可选沟通状态导出）：单独脚本导出当前页面可见沟通状态，辅助投递后跟进整理。
 
+## Userscripts（浏览器脚本）
+
+- `userscripts/boss-job-screening-agent.user.js`
+  - 主脚本；
+  - 用于岗位详情页；
+  - 读取当前页面可见岗位 DOM；
+  - 展示规则初筛、规则初筛详情、AI 深度核验、历史记录和投递反馈；
+  - 手动点击后调用本地后端 `POST /api/job/analyze`。
+
+- `userscripts/boss-chat-followup-export.user.js`
+  - Optional Follow-up Export（可选沟通状态导出）；
+  - 用于沟通 / 聊天页面；
+  - 只导出当前页面可见沟通状态；
+  - 不调用后端；
+  - 不访问 `/api/job/analyze`；
+  - 不参与 DeepSeek analysis、Redis cache、Profile RAG-Lite 或 MySQL persistence 主链路。
+
 ## Architecture（系统架构）
 
 ```mermaid
@@ -149,7 +166,7 @@ curl http://localhost:8080/api/health
 
 7. Open supported job page and run analysis（打开岗位页面并运行分析）
 
-打开支持的 BOSS 岗位页面，查看右下角岗位评分面板。需要 AI 深度分析时，手动点击面板中的 AI 分析按钮；分析结果会通过本地后端写入 MySQL，并按配置写入 Redis cache。
+打开支持的 BOSS 岗位页面，查看右下角岗位评分面板。需要 AI 深度分析时，手动点击面板中的 AI 深度核验按钮；分析结果会通过本地后端写入 MySQL，并按配置写入 Redis cache。
 
 ## Optional Follow-up Export（可选沟通状态导出）
 
