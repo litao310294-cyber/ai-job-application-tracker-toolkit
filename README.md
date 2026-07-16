@@ -1,267 +1,595 @@
-# AI Job Screening Agent（智能岗位筛选 Agent）
+# AI Job Screening Agent
 
-## Overview（项目简介）
+基于 RAG + LLM Agent 的智能岗位分析与求职辅助系统。
 
-AI Job Screening Agent 是一个面向求职场景的 local-first AI 岗位筛选辅助工具，定位是 Java 后端 / AI 应用开发实习方向的个人项目展示。它帮助用户在主动浏览岗位时，把页面可见岗位信息、规则评分、LLM 分析、用户画像证据和后续投递反馈串成一个可追踪的分析流程。
+> **一句话介绍：** 基于 Java Spring Boot + RAG + LLM Agent 的智能岗位分析与求职辅助系统，将 Rule Engine、Profile RAG、LLM Semantic Analysis、Feedback Memory 和 Trace 组合成一条可解释的 AI 应用链路。
 
-浏览器侧通过 Userscript 读取招聘页面当前可见 DOM 中的岗位信息，并在页面内展示岗位匹配度面板。后端基于 Spring Boot，结合 rule-based scoring、DeepSeek API、Profile RAG-Lite、Redis cache 和 MySQL persistence，生成岗位匹配分析、风险点、简历匹配点、面试准备方向和投递建议。
+这是一个以 Java / Spring Boot 为核心的 AI 应用工程项目：系统接收用户当前浏览的岗位信息，先用确定性规则完成硬约束初筛，再从用户画像和历史反馈 Memory 中检索证据，构建受约束的 LLM 分析请求，校验结构化结果并保存完整分析 Trace。
 
-本项目是个人辅助工具，不是爬虫系统；不自动投递，不自动发送消息，不绕过招聘平台限制，也不访问平台非公开 API。所有岗位判断结果仅作为个人求职决策参考。
+项目重点不是“调用一次大模型 API”，而是围绕岗位分析场景构建可解释、可降级、可追踪的 Agent 应用链路。
 
-## Features（核心功能）
+### 为什么不是直接调用 LLM
 
-- Job information extraction（岗位信息提取）：Userscript 从当前页面可见 DOM 中提取 jobTitle、companyName、salary、city、schedule、duration 和 JD 文本。
-- Rule-based scoring（规则评分）：浏览器侧先做本地规则评分，用于快速初筛岗位方向、技术栈和风险点。
-- LLM analysis with DeepSeek（DeepSeek 大模型分析）：用户主动点击后，请求 Spring Boot 后端调用 DeepSeek OpenAI-compatible API 生成结构化分析。
-- Profile RAG-Lite（用户画像检索增强）：后端将用户画像与可选历史反馈整理为 chunk，用关键词检索命中证据增强 AI Prompt。
-- Redis cache（分析结果缓存）：同一岗位与同一 profileVersion 下复用分析结果，减少重复 LLM 调用。
-- MySQL persistence（历史记录持久化）：保存岗位记录、AI 分析结果、用户画像、RAG-Lite chunk 和投递反馈。
-- Feedback loop（投递反馈闭环）：保存投递状态、沟通状态、面试状态、备注和拒绝原因，可在 reindex 时进入 RAG-Lite。
-- Userscript integration（浏览器脚本集成）：在 BOSS 直聘页面内展示评分、AI 分析结果、历史记录和反馈表单。
-- Optional Follow-up Export（可选沟通状态导出）：单独脚本导出当前页面可见沟通状态，辅助投递后跟进整理。
+纯 LLM 方案很难稳定支撑岗位匹配：
 
-## Userscripts（浏览器脚本）
+- 模型可能根据岗位描述臆测用户没有做过的项目或技能；
+- 结论缺少可追溯的匹配证据；
+- 学历、城市、出勤和实习周期等硬约束不适合交给模型自由判断；
+- 投递和面试反馈只是数据库历史记录，无法自动成为后续分析上下文。
 
-- `userscripts/boss-job-screening-agent.user.js`
-  - 主脚本；
-  - 用于岗位详情页；
-  - 读取当前页面可见岗位 DOM；
-  - 展示规则初筛、规则初筛详情、AI 深度核验、历史记录和投递反馈；
-  - 手动点击后调用本地后端 `POST /api/job/analyze`。
+当前实现将职责拆开：规则层控制确定性约束，RAG 层提供用户真实证据，Prompt 层限制模型边界，LLM 负责语义解释，Validator 保证输出可用，Trace 记录每个阶段，Feedback Memory 再将用户行为反馈接回画像检索。
 
-- `userscripts/boss-chat-followup-export.user.js`
-  - Optional Follow-up Export（可选沟通状态导出）；
-  - 用于沟通 / 聊天页面；
-  - 只导出当前页面可见沟通状态；
-  - 不调用后端；
-  - 不访问 `/api/job/analyze`；
-  - 不参与 DeepSeek analysis、Redis cache、Profile RAG-Lite 或 MySQL persistence 主链路。
+## 项目简介
 
-## Architecture（系统架构）
+招聘 JD 通常存在以下问题：
+
+- 信息量大，岗位职责和任职要求混在长文本中；
+- 技术要求表达不统一，同一能力可能使用不同术语；
+- 人工逐项对照简历和项目经历成本高；
+- 投递、沟通、面试反馈容易散落，无法形成后续分析依据。
+
+系统将岗位输入、用户画像、RAG 证据、规则判断、LLM 分析和反馈记忆串成一个闭环：
+
+```text
+岗位 JD
+  ↓
+结构化岗位信息
+  ↓
+规则初筛
+  ↓
+用户 Profile RAG / Feedback Memory
+  ↓
+受约束 Prompt
+  ↓
+DeepSeek 结构化分析
+  ↓
+结果校验与持久化
+  ↓
+Trace 与投递反馈
+```
+
+当前后端已经包含：
+
+- Spring Boot 岗位分析接口；
+- MySQL 岗位、分析结果、用户画像和反馈存储；
+- Redis 分析结果缓存；
+- PDFBox 简历解析与 LLM 结构化；
+- DashScope `text-embedding-v4` Embedding；
+- Java 内存余弦相似度 + 关键词的 Hybrid Retrieval；
+- Profile Chunk Weight 排序；
+- Feedback Memory Chunk；
+- Job Analysis Trace。
+
+## 真实使用场景
+
+用户在招聘平台主动打开一个岗位详情页，浏览器侧采集岗位标题、公司、薪资、城市、学历、技能标签和完整 JD。用户点击分析后，后端先执行规则初筛，再根据岗位语义检索用户的技能、项目和经历证据，最后生成结构化投递建议。
 
 ```mermaid
 flowchart LR
-  A["Job Page / BOSS visible page<br/>页面可见 DOM"] --> B["Userscript<br/>boss-job-screening-agent.user.js"]
-  B --> C["Spring Boot API<br/>/api/job/analyze"]
-  C --> D["Rule Scoring<br/>规则评分输入"]
-  C --> E{"Redis Cache<br/>分析结果缓存"}
-  E -- "cache hit" --> K["Analysis Result / Feedback<br/>分析结果与反馈"]
-  E -- "cache miss" --> F["Profile RAG-Lite<br/>用户画像检索增强"]
-  F --> G["DeepSeek API<br/>LLM analysis"]
-  G --> H["MySQL<br/>job_record / job_analysis"]
-  H --> I["Analysis Result<br/>岗位分析结果"]
-  I --> K
-  K --> J["Feedback<br/>投递反馈"]
-  J --> H
-  J -. "optional reindex" .-> F
+    A[浏览岗位 JD] --> B[采集结构化岗位信息]
+    B --> C[规则初筛]
+    C --> D[Profile Hybrid Retrieval]
+    D --> E[LLM Semantic Analysis]
+    E --> F[匹配分 / 风险 / 面试建议]
+    F --> G[用户提交投递反馈]
+    G --> H[Feedback Memory]
+    H -. 参与后续检索 .-> D
 ```
 
-## Tool Calling Design（工具调用设计）
+这个流程服务的是“当前岗位是否值得投、依据是什么、还需要准备什么”，不是自动投递或批量爬取系统。
 
-本项目中的 Tool Calling 是轻量 Tool Calling 风格，不是复杂多 Agent 编排。它将岗位查询、用户画像查询、历史记录查询等后端业务能力封装为 AI 分析流程可调用的工具能力，用于说明后端能力如何服务 LLM 分析流程。
+## Demo Output
 
-当前代码中主要体现为 Spring Boot service/repository/controller 能力组合：岗位分析流程会读取岗位输入、查询 Profile RAG-Lite chunk、查询历史记录、保存分析结果和反馈。它没有实现模型自主规划多步骤任务，也没有实现复杂多 Agent 协作。
-
-| Tool | Description |
-|---|---|
-| jobQueryTool | 查询岗位记录和岗位详情 |
-| profileQueryTool | 查询用户画像和 RAG-Lite 命中证据 |
-| historyQueryTool | 查询历史分析记录和投递反馈 |
-| feedbackTool | 保存用户反馈，辅助后续岗位分析 |
-
-Example Tool Call:
+下面是当前分析接口的简化输出示例，字段与实际 `JobAnalyzeResponse` 保持一致：
 
 ```json
 {
-  "tool": "profileQueryTool",
-  "arguments": {
-    "profileName": "default",
-    "query": "Java backend Spring Boot Redis AI application internship",
-    "topK": 5
-  }
-}
-```
-
-Example Tool Result:
-
-```json
-{
-  "enabled": true,
-  "profileName": "default",
-  "chunkCount": 2,
-  "chunks": [
-    {
-      "id": 12,
-      "title": "Skills",
-      "content": "Java, Spring Boot, MySQL, Redis, RAG-Lite, Tool Calling",
-      "score": 8,
-      "sourceType": "manual_profile"
-    },
-    {
-      "id": 18,
-      "title": "Project Experience",
-      "content": "Built a Spring Boot backend with Redis cache and MySQL persistence.",
-      "score": 5,
-      "sourceType": "manual_profile"
-    }
+  "decision": "优先投",
+  "score": 95,
+  "resumeMatches": [
+    "AI求职Agent项目",
+    "RAG应用开发经验",
+    "Java Spring Boot后端经验"
+  ],
+  "risks": [
+    "需要深入Spring Boot原理"
   ]
 }
 ```
 
-当前记录核心分析日志与业务结果，后续可扩展 `tool_call_log` 表以追踪更细粒度的工具调用过程。
+完整响应还会返回 `taskId`、`jobRecordId`、`profileRag` 和召回 Chunk 的 `semanticScore`、`keywordScore`、`chunkWeight`、`finalScore`，用于结果解释和 Trace 关联。
 
-## RAG-Lite Design（RAG-Lite 设计）
+## 系统整体架构
 
-当前 RAG-Lite 是基于用户画像的轻量检索增强。用户画像、技能、项目经历、偏好关键词，以及可选的历史分析和投递反馈会被整理到 `user_profile_document` 和 `user_profile_chunk` 中。岗位分析时，后端根据岗位标题、城市、出勤周期、规则分数、规则结论和 JD 文本构造 query，并用关键词命中方式检索 topK chunk。
-
-这不是向量数据库方案。当前版本没有使用 Milvus、Chroma、Redis Vector、Embedding rerank 等生产级 RAG 组件。选择 RAG-Lite 的原因是用户画像数据规模小、字段结构清晰、可解释性强，并且实现轻量，适合作为个人求职辅助工具的第一版。
-
-后续如果用户画像、历史记录和简历材料规模明显变大，可以升级为 Embedding + Vector Store + Rerank，并保留当前关键词命中结果作为可解释 fallback。
-
-## Quick Start（快速启动）
-
-1. Clone repository（克隆仓库）
-
-```bash
-git clone <your-repo-url>/ai-job-screening-agent.git
-cd ai-job-screening-agent
+```mermaid
+flowchart TD
+    A[用户当前浏览的岗位] --> B[Structured Job Input]
+    B --> C[JobAnalysisService]
+    C --> D[JobRuleEngine]
+    C --> E[RagRetrievalService]
+    E --> E1[VectorSearchService]
+    E --> E2[Keyword Profile Search]
+    E1 --> E3[Hybrid Retrieval + Chunk Weight]
+    E2 --> E3
+    E3 --> F[RagContextBuilder]
+    D --> G[JobAnalysisPromptBuilder]
+    F --> G
+    G --> H[LlmAnalyzer]
+    H --> I[DeepSeek API]
+    I --> J[ResultValidator]
+    J --> K[AnalysisSaver]
+    K --> L[(MySQL job_record / job_analysis)]
+    C -. stage events .-> M[(Job Analysis Trace)]
+    N[POST /api/job/feedback] --> O[FeedbackMemoryService]
+    O --> P[FEEDBACK chunk]
+    P --> Q[(user_profile_chunk)]
+    Q --> E
 ```
 
-2. Start MySQL and Redis with Docker Compose（启动依赖环境）
+岗位分析主流程由后端固定编排，LLM 负责语义分析，规则、检索、校验和持久化由业务代码控制。这种设计保留了 Agent 的灵活分析能力，同时避免让模型直接决定数据库写入或硬约束结论。
+
+## Agent Workflow
+
+一次岗位分析从 `JobAnalysisService.analyze()` 开始，当前流程如下：
+
+当前采用 **Workflow Agent** 架构：后端负责流程编排、状态控制、数据持久化和安全边界；LLM 负责岗位与用户证据之间的语义理解、分析和自然语言生成。模型不会直接决定硬约束、数据库写入或 Trace 状态。
+
+```mermaid
+sequenceDiagram
+    participant API as JobAnalysisController
+    participant S as JobAnalysisService
+    participant R as JobRuleEngine
+    participant RR as RagRetrievalService
+    participant P as PromptBuilder
+    participant L as LlmAnalyzer
+    participant V as ResultValidator
+    participant DB as AnalysisSaver
+
+    API->>S: POST /api/job/analyze
+    S->>R: evaluate(request)
+    R-->>S: RuleAnalysisResult
+    S->>RR: retrieve(profile, jobQuery, topK)
+    RR-->>S: Hybrid profile chunks
+    S->>P: build(job, rules, ragContext)
+    P-->>S: JobAnalysisPrompt
+    S->>L: analyze(prompt)
+    L-->>S: LlmAnalyzeResult
+    S->>V: validate(result)
+    V-->>S: validated result
+    S->>DB: save(jobRecord, analysis, cache)
+    DB-->>API: JobAnalyzeResponse
+```
+
+核心模块位于 `backend/src/main/java/com/lt/aijobscreeningagent/service/analysis/`：
+
+| 模块 | 职责 |
+|---|---|
+| `JobRuleEngine` | 保留城市、出勤、周期、学历、方向和硬拒绝等确定性规则结果 |
+| `RagContextBuilder` | 将检索到的 Profile Chunk 转换为带类型、来源和分数的上下文 |
+| `JobAnalysisPromptBuilder` | 组合岗位信息、规则结果和 RAG Context |
+| `LlmAnalyzer` | 调用现有 LLM Client，统一模型分析入口 |
+| `ResultValidator` | 校验决策枚举、分数范围、数组字段和必要输出 |
+| `AnalysisSaver` | 保存 `job_analysis`，并写入分析缓存 |
+| `FallbackAnalysisService` | LLM 未启用、调用失败或结果不合法时提供可展示的降级结果 |
+
+失败不会直接把模型异常暴露给前端：Embedding 失败回退关键词检索，LLM 失败回退规则驱动结果，Trace 失败也不会阻断主业务。
+
+## Output Contract
+
+下面是当前 `POST /api/job/analyze` 的完整输出结构示例。字段来自 `JobAnalyzeResponse`、`JobAnalyzeProfileRag` 和 `JobAnalyzeProfileRagChunk`；分数和文本为示例值：
+
+```json
+{
+  "jobRecordId": 101,
+  "taskId": "8f4d2f38-2d6c-4c2f-a8c7-7e3a9d5b6f10",
+  "status": "success",
+  "decision": "优先投",
+  "score": 95,
+  "direction": "AI应用开发",
+  "reasons": [
+    "岗位要求与用户的 RAG、Agent 和 Java 后端经历高度相关",
+    "项目经历能够为岗位职责提供直接证据"
+  ],
+  "resumeMatches": [
+    "AI求职Agent项目",
+    "RAG应用开发经验",
+    "Java Spring Boot后端经验"
+  ],
+  "risks": [
+    "需要进一步准备 Spring Boot 原理和系统设计问题"
+  ],
+  "interviewFocus": [
+    "解释 RAG 检索、Hybrid Retrieval 和证据引用",
+    "说明 Java 后端服务的缓存、持久化与异常降级"
+  ],
+  "suggestedMessage": "您好，我对 AI 应用开发方向很感兴趣，也有 Java 后端和 RAG 项目实践，希望进一步了解岗位的具体职责。",
+  "profileRag": {
+    "enabled": true,
+    "profileVersion": "profile-version",
+    "query": "岗位方向：AI应用开发；核心技能：Java、Spring Boot、RAG、Agent",
+    "chunkCount": 3,
+    "retrievalMode": "HYBRID",
+    "chunks": [
+      {
+        "id": 12,
+        "title": "项目经历",
+        "chunkType": "PROJECT",
+        "sourceType": "manual_profile",
+        "semanticScore": 0.91,
+        "keywordScore": 0.86,
+        "chunkWeight": 1.3,
+        "finalScore": 1.14
+      },
+      {
+        "id": 18,
+        "title": "技能栈",
+        "chunkType": "SKILL",
+        "sourceType": "manual_profile",
+        "semanticScore": 0.88,
+        "keywordScore": 0.90,
+        "chunkWeight": 1.2,
+        "finalScore": 1.08
+      }
+    ]
+  }
+}
+```
+
+这个结果不是单独的模型文本：`profileRag` 会同时返回检索模式、召回 Chunk 和排序分数，便于解释模型使用了哪些用户证据。
+
+## Profile RAG 用户画像系统
+
+### 用户画像来源
+
+用户画像可以来自：
+
+- 手动维护的技能、项目、求职目标、城市偏好和约束；
+- PDF 简历导入：PDFBox 提取文本后，由 `ResumeProfileLlmService` 结构化更新 `user_profile`；
+- 用户历史岗位分析与投递反馈。
+
+画像经过 `user_profile_document` 和 `user_profile_chunk` 持久化。岗位分析不会把整份简历无差别塞进 Prompt，原因是：
+
+- 增加 Token 消耗；
+- 长文本会引入无关信息；
+- 证据边界不清晰，容易让模型过度推断；
+- 无法解释某条结论来自哪段经历。
+
+### Hybrid Retrieval
+
+```mermaid
+flowchart LR
+    A[岗位 Query] --> B[EmbeddingService]
+    B --> C[Java Vector Search]
+    A --> D[Keyword Profile Search]
+    C --> E[按 chunkId 合并]
+    D --> E
+    E --> F[归一化 semanticScore / keywordScore]
+    F --> G[应用 chunkWeight]
+    G --> H[Top-K Profile Context]
+```
+
+当前使用 DashScope `text-embedding-v4`。向量保存在 `user_profile_chunk.embedding_json`，由 Java 应用计算内存余弦相似度，不引入 Milvus、Elasticsearch 或其他向量数据库。
+
+关键词检索仍然保留，作为 Embedding 不可用、向量不存在或调用失败时的 fallback。
+
+检索分数为：
+
+```text
+baseScore = 0.7 * semanticScore + 0.3 * keywordScore
+finalScore = baseScore * chunkWeight
+```
+
+其中：
+
+- `semanticScore`：归一化后的向量语义相似度；
+- `keywordScore`：归一化后的关键词匹配分；
+- `chunkWeight`：根据证据类型设置的重要程度；
+- `finalScore`：最终排序依据。
+
+## Chunk Weight 权重机制
+
+不同画像证据对岗位匹配的证明能力不同，当前权重为：
+
+| Chunk Type | Weight | 设计含义 |
+|---|---:|---|
+| `PROJECT` | 1.3 | 真实项目是最重要的能力证据 |
+| `EXPERIENCE` | 1.2 | 真实工作或实践经历 |
+| `SKILL` | 1.2 | 直接技术能力证据 |
+| `TARGET` | 1.0 | 用户目标方向和偏好 |
+| `RESUME` | 1.0 | 简历原文和补充信息 |
+| `KEYWORD` | 0.8 | 辅助召回关键词 |
+| `EDUCATION` | 0.8 | 主要用于硬条件判断，不等同于技术能力 |
+| `FEEDBACK` | 0.7 | 历史行为辅助证据 |
+
+因此，当项目经历和历史反馈具有相近语义分数时，项目经历会自然排在反馈之前。Feedback 不能覆盖用户真实技能、项目经历或规则层结论。
+
+## Feedback Memory 闭环
+
+反馈不只是保存为历史记录，也会被转化为可检索的 Profile Memory：
+
+```mermaid
+flowchart TD
+    A[POST /api/job/feedback] --> B[(job_feedback)]
+    B --> C[FeedbackMemoryService]
+    C --> D[FeedbackChunkBuilder]
+    D --> E[FEEDBACK chunk]
+    E --> F[(user_profile_chunk)]
+    F --> G[ProfileEmbeddingIndexService]
+    G --> H[Embedding JSON]
+    H --> I[后续 Hybrid Retrieval]
+```
+
+Feedback Chunk 会记录岗位方向、投递/沟通/面试状态、反馈原因和可用的匹配因素。它使用 `FEEDBACK` 类型和 `0.7` 权重，作为后续岗位分析的辅助上下文。
+
+Feedback 是用户的**行为信号**，不是能力证明。因此它的权重低于 `PROJECT` 和 `SKILL`：历史上获得面试只能说明某次投递产生了正向结果，不能替代用户真实项目、技能和经历证据。
+
+当用户画像重新索引时，历史反馈也会重新构建为 Feedback Chunk，避免完整重建画像索引后丢失行为记忆。
+
+## Trace 可观测系统
+
+每次岗位分析都会在 `job_analysis_trace` 中记录阶段级执行信息：
+
+```mermaid
+flowchart LR
+    A[RULE_ANALYSIS] --> B[RAG_RETRIEVAL]
+    B --> C[PROMPT_BUILD]
+    C --> D[LLM_CALL]
+    D --> E[RESULT_VALIDATE]
+    E --> F[SAVE_RESULT]
+```
+
+Trace 记录：
+
+- 阶段输入和输出摘要；
+- 阶段耗时 `latency_ms`；
+- RAG query、retrieval mode、chunk 数量和分数；
+- Prompt version、Prompt 长度和 Feedback Chunk 数量；
+- LLM model、响应长度和异常；
+- 校验结果与保存结果；
+- 失败阶段的异常类型和错误消息。
+
+查询一次任务的完整 Trace：
+
+```http
+GET /api/trace/{taskId}
+```
+
+Trace 的目标是回答“这次结果为什么这样生成”和“问题发生在哪个阶段”，而不是保存模型隐藏思维链。
+
+## Prompt Engineering
+
+Prompt 由 `OpenAiCompatibleLlmClient` 与 `JobAnalysisPromptBuilder` 协作完成。
+
+### System Prompt
+
+System Prompt 负责稳定边界：
+
+- 定义个人求职分析助手角色；
+- 要求以用户能力画像作为真实证据；
+- 要求历史反馈只能辅助参考；
+- 没有证据时禁止编造项目、技能或投递历史；
+- 约束输出为合法 JSON；
+- 限定 `decision`、`score`、数组字段等结构。
+
+### User Prompt
+
+User Prompt 注入本次任务数据：
+
+- 岗位标题、公司、薪资、城市、出勤和周期；
+- JD 文本；
+- 规则评分与规则结论；
+- `RagContextBuilder` 生成的能力画像和历史行为反馈证据。
+
+一个与当前实现一致的 Prompt 片段如下（仅展示约束结构，不包含模型隐藏思维链）：
+
+```text
+请分析以下岗位是否适合当前用户投递。
+岗位信息：{jobInfo}
+规则分析：{ruleAnalysis}
+【用户能力画像】：{capabilityContext}
+【用户历史行为反馈】：{feedbackContext}
+只根据已提供证据判断，不要编造项目、技能或投递历史。
+历史反馈只能作为辅助参考，不能覆盖规则结论和真实能力证据。
+只返回合法 JSON，字段必须包含 decision、score、reasons、risks、resumeMatches、interviewFocus、suggestedMessage。
+```
+
+模型输出经过 `ResultValidator` 校验后，才进入 `AnalysisSaver`。这样 Prompt 负责语义约束，代码负责格式和业务安全边界。
+
+## 技术栈
+
+### Backend
+
+- Java 17
+- Spring Boot 3.5
+- Spring Web
+- Spring JDBC
+- MySQL 8
+- Redis 7
+- Maven
+- Flyway migration scripts（当前默认配置仍以 `schema.sql` 初始化为主）
+
+### AI / Agent
+
+- DeepSeek OpenAI-compatible API
+- DashScope `text-embedding-v4`
+- Profile RAG
+- Hybrid Retrieval
+- Prompt Engineering
+- Structured JSON Output
+- Feedback Memory
+- Agent Trace
+- 轻量业务能力工具化（当前不是模型自主多步 Function Calling）
+
+### Input / Integration
+
+- BOSS 岗位结构化采集 Userscript / Chrome Extension 链路
+- Apache PDFBox 简历文本解析
+- MySQL + Java 内存向量检索
+
+## 项目亮点
+
+1. **规则 + RAG + LLM 三层分析架构**：硬约束由规则判断，语义匹配由 RAG 提供证据，LLM 负责解释和建议。
+2. **Evidence-grounded Prompt**：模型只能基于检索到的用户画像证据生成简历匹配点，降低脱离真实经历的幻觉。
+3. **Hybrid Retrieval + Chunk Weight**：语义检索与关键词检索互补，并用证据类型权重提升项目经历的排序优先级。
+4. **Feedback Memory**：把投递反馈转化为可检索记忆，使后续分析能够参考历史行为，但不覆盖真实能力证据。
+5. **阶段级 Trace**：从规则分析到结果保存均可按 `taskId` 回放，便于定位检索、Prompt、LLM 和校验问题。
+6. **工程化降级**：Embedding、LLM、JSON 校验或缓存异常时，系统仍能返回可解释的降级结果。
+
+## API 示例
+
+### 岗位分析
+
+```http
+POST /api/job/analyze
+Content-Type: application/json
+```
+
+```json
+{
+  "jobTitle": "AI 应用开发实习生",
+  "companyName": "Example Tech",
+  "salary": "300-500/天",
+  "city": "北京",
+  "schedule": "5天/周",
+  "duration": "6个月",
+  "jobText": "负责 RAG、Agent 和 Java 后端应用开发",
+  "ruleScore": 82,
+  "ruleConclusion": "可投",
+  "capturedJobRecordId": null
+}
+```
+
+### 岗位采集
+
+```http
+POST /api/job/capture
+```
+
+用于将结构化岗位信息保存为 `job_record`，之后可通过 `capturedJobRecordId` 进入分析。
+
+### Feedback Memory
+
+```http
+POST /api/job/feedback
+Content-Type: application/json
+```
+
+```json
+{
+  "jobRecordId": 101,
+  "applyStatus": "已投递",
+  "chatStatus": "已沟通",
+  "interviewStatus": "进入面试",
+  "feedbackNote": "Java、RAG 项目经验匹配度较高",
+  "rejectReason": null
+}
+```
+
+### 简历导入
+
+```http
+POST /api/profile/resume/upload
+Content-Type: multipart/form-data
+```
+
+上传 PDF 后，系统会执行 PDFBox 文本提取、LLM 结构化、Profile Chunk 重建和 Embedding 索引。
+
+### Profile RAG
+
+```http
+POST /api/profile/reindex?includeHistory=false
+GET  /api/profile/search?query=Java%20RAG%20Agent&topK=5
+```
+
+### Trace
+
+```http
+GET /api/trace/{taskId}
+```
+
+其他历史记录、用户画像和评分配置接口可见 `backend/src/main/java/com/lt/aijobscreeningagent/controller/` 与 `profile/` 包中的 Controller 定义。
+
+## Quick Start
+
+### 1. 启动 MySQL 与 Redis
 
 ```bash
 docker compose up -d
 ```
 
-3. Configure environment variables（配置环境变量）
+### 2. 配置环境变量
 
-```bash
-cp .env.example .env
+复制 `.env.example`，至少配置：
+
+```text
+MYSQL_URL=jdbc:mysql://localhost:3306/ai_job_agent
+MYSQL_USERNAME=root
+MYSQL_PASSWORD=your-password
+DEEPSEEK_API_KEY=your-deepseek-key
+DASHSCOPE_API_KEY=your-dashscope-key
 ```
 
-编辑本机环境变量或 `.env`，填入自己的 `DEEPSEEK_API_KEY`。不要提交真实 API Key、密码、Cookie 或 Token。
+不要提交真实 API Key、密码、Cookie 或 Token。
 
-4. Initialize database schema（初始化数据库）
+### 3. 初始化数据库
+
+当前默认 `application.yml` 将 Flyway 设为关闭，空数据库可先执行：
 
 ```bash
-mysql -h 127.0.0.1 -P 3306 -u root -proot ai_job_agent < backend/src/main/resources/schema.sql
+mysql -h 127.0.0.1 -P 3306 -u root -p ai_job_agent < backend/src/main/resources/schema.sql
 ```
 
-5. Start Spring Boot backend（启动后端）
+版本迁移文件位于 `backend/src/main/resources/db/migration/`。如果部署环境启用 Flyway，请使用新增版本文件管理后续表结构变更，不要直接修改已发布的历史迁移。
+
+### 4. 启动后端
 
 ```bash
 cd backend
 mvn spring-boot:run
 ```
 
-Health check:
+健康检查：
 
-```bash
-curl http://localhost:8080/api/health
+```http
+GET http://localhost:8080/api/health
 ```
 
-6. Install userscript（安装浏览器脚本）
-
-将 `userscripts/boss-job-screening-agent.user.js` 安装到 Tampermonkey 或兼容的 Userscript 管理器。
-
-7. Open supported job page and run analysis（打开岗位页面并运行分析）
-
-打开支持的 BOSS 岗位页面，查看右下角岗位评分面板。需要 AI 深度分析时，手动点击面板中的 AI 深度核验按钮；分析结果会通过本地后端写入 MySQL，并按配置写入 Redis cache。
-
-## Optional Follow-up Export（可选沟通状态导出）
-
-`userscripts/boss-chat-followup-export.user.js` 是可选辅助脚本，用于整理投递后的沟通状态。它不是 AI Job Screening Agent 的核心岗位筛选链路，也不参与 `Job Page -> Userscript -> Spring Boot API -> Rule Scoring -> Redis Cache -> Profile RAG-Lite -> DeepSeek API -> MySQL -> Analysis Result / Feedback` 主流程。
-
-该模块只读取当前页面可见 DOM 中已经展示的沟通状态信息，并导出为便于人工整理的文本结果。它不读取 Cookie / Token，不访问招聘平台非公开 API，不自动投递，不自动发送消息，也不绕过验证码或反爬机制。
-
-使用方式：将 `userscripts/boss-chat-followup-export.user.js` 作为独立 Userscript 安装，需要整理沟通状态时手动点击页面上的导出按钮。
-
-## API Overview（接口概览）
-
-- `GET /api/health`：健康检查。
-- `POST /api/job/analyze`：保存岗位记录，检索 Profile RAG-Lite，调用 DeepSeek 或 fallback，并保存分析结果。
-- `GET /api/jobs/recent`：查询最近岗位分析记录。
-- `GET /api/jobs/{jobRecordId}`：查询单条岗位记录详情。
-- `GET /api/jobs/search`：按关键词搜索历史岗位记录。
-- `GET /api/jobs/match`：按当前岗位信息匹配历史记录。
-- `POST /api/job/feedback`：保存投递反馈。
-- `GET /api/job/feedback`：查询某岗位的反馈列表。
-- `POST /api/profile/manual`：保存默认用户画像。
-- `GET /api/profile/current`：查询当前用户画像。
-- `POST /api/profile/reindex`：重建 RAG-Lite document/chunk。
-- `GET /api/profile/search`：搜索 Profile RAG-Lite chunk。
-- `GET /api/profile/scoring-config`：读取用户评分配置。
-- `POST /api/profile/generate-scoring-config`：基于用户画像生成评分配置。
-- `POST /api/profile/scoring-config/confirm`：确认评分配置。
-
-更多示例见 [API Reference（接口文档）](docs/api_reference.md)。
-
-## Screenshots / Demo（截图与演示）
-
-Screenshots will be added later. 当前仓库没有可引用的截图或 `demo.gif`，因此 README 不放置不存在的图片链接。建议补充内容见 [docs/screenshots/README.md](docs/screenshots/README.md)。
-
-## Compliance Boundary（合规边界）
-
-- 只读取当前页面可见 DOM 文本。
-- 不读取 Cookie / Token。
-- 不访问招聘平台非公开 API。
-- 不自动投递。
-- 不自动发送消息。
-- 不绕过验证码或反爬机制。
-- 不做批量爬取。
-- 不采集非当前用户主动查看的信息。
-- AI 分析仅作个人辅助判断，最终投递决策由用户手动完成。
-
-## Roadmap（后续规划）
-
-- More structured feedback loop（更结构化的反馈闭环）：沉淀投递结果、拒绝原因和面试反馈。
-- Better profile management（更完善的用户画像管理）：支持更清晰的 profile 编辑和版本说明。
-- Optional embedding-based retrieval（可选向量检索）：在数据规模变大后引入 Embedding + Vector Store + Rerank。
-- More detailed tool call logging（更细粒度工具调用日志）：扩展 `tool_call_log` 记录分析流程中的工具输入输出。
-- Basic dashboard or screenshots（基础看板或截图）：补充岗位评分面板、AI 分析结果和历史记录页面截图。
-
-## Documentation（项目文档）
-
-- [Architecture（系统架构）](docs/architecture.md)
-- [API Reference（接口文档）](docs/api_reference.md)
-- [Demo Walkthrough（演示流程）](docs/demo_walkthrough.md)
-- [Optional Follow-up Export（可选沟通状态导出）](docs/followup_export.md)
-- [Privacy & Compliance（隐私与合规）](docs/privacy_and_compliance.md)
-- [Roadmap（后续规划）](docs/roadmap.md)
-
-## Directory Structure（目录结构）
+## 代码结构
 
 ```text
-ai-job-screening-agent/
-|-- backend/                 Spring Boot backend
-|-- userscripts/             Userscript integration
-|-- docs/                    Project documentation
-|-- docker-compose.yml       Local MySQL and Redis dependencies
-|-- .env.example             Environment variable template
-|-- LICENSE
-`-- README.md
+ai-job-screening-agent-agent-enhance/
+├── backend/
+│   └── src/main/java/com/lt/aijobscreeningagent/
+│       ├── controller/       # HTTP API
+│       ├── dto/              # 请求与响应模型
+│       ├── llm/              # DeepSeek / OpenAI-compatible client
+│       ├── profile/           # Profile、Embedding、Hybrid Retrieval
+│       ├── repository/        # Job 与 Feedback 数据访问
+│       ├── resume/            # PDFBox 与简历结构化
+│       └── service/
+│           ├── analysis/      # Rule、Prompt、LLM、Validator、Saver
+│           ├── embedding/    # EmbeddingService 实现
+│           ├── feedback/     # Feedback Memory
+│           ├── rag/          # 岗位 Query 构造
+│           └── trace/        # Job Analysis Trace
+├── userscripts/              # 岗位采集与浏览器侧辅助
+├── frontend/                 # 辅助展示页面
+├── docs/                     # 架构与接口文档
+├── research/                 # 采集方案研究资料
+├── docker-compose.yml
+└── README.md
 ```
 
-## Repository Description（仓库描述）
+核心后端能力位于 `backend/`；浏览器脚本和前端主要负责输入采集与结果展示，不承担 Agent 核心编排。
 
-Local-first, compliance-aware, Java backend powered lightweight AI job screening agent with Userscript integration, rule scoring, DeepSeek analysis, Redis cache, MySQL persistence, and Profile RAG-Lite.
+## 后续规划
 
-## Database Migrations
+- 完善岗位分析与 RAG 证据的前端展示；
+- 增强受约束的业务工具调用能力，并继续保留固定流程兜底；
+- 优化岗位 Query、Chunk 切分和 Hybrid Retrieval 评估；
+- 增加召回质量、分析一致性和反馈有效性的离线评估指标；
+- 在数据规模增长后评估专用向量存储，而不是提前引入复杂基础设施。
 
-数据库版本由 Flyway 在 Spring Boot 启动时自动管理。当前已有数据库包含 V2-V5 的字段，因此首次启动会以版本 5 建立 baseline，避免重复执行历史 SQL。
+## License
 
-以后新增表或字段时，只创建新的迁移文件，例如：
-
-```text
-backend/src/main/resources/db/migration/V6__add_feedback_memory.sql
-```
-
-不要直接修改线上数据库，也不要修改已经执行过的历史 migration。可使用以下 SQL 查看迁移状态：
-
-```sql
-select installed_rank, version, description, success, installed_on
-from flyway_schema_history
-order by installed_rank;
-```
-
-空数据库首次使用时，先执行 `backend/src/main/resources/schema.sql` 创建基础表；之后 Spring Boot 启动会自动执行 Flyway 迁移并创建版本历史。
+见 [LICENSE](LICENSE)。
