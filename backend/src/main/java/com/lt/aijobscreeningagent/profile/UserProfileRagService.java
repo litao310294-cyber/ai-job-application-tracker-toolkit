@@ -28,17 +28,20 @@ public class UserProfileRagService {
   private final UserProfileRagRepository userProfileRagRepository;
   private final JobHistoryRepository jobHistoryRepository;
   private final JobFieldSanitizer jobFieldSanitizer;
+  private final ProfileEmbeddingIndexService profileEmbeddingIndexService;
 
   public UserProfileRagService(
       UserProfileRepository userProfileRepository,
       UserProfileRagRepository userProfileRagRepository,
       JobHistoryRepository jobHistoryRepository,
-      JobFieldSanitizer jobFieldSanitizer
+      JobFieldSanitizer jobFieldSanitizer,
+      ProfileEmbeddingIndexService profileEmbeddingIndexService
   ) {
     this.userProfileRepository = userProfileRepository;
     this.userProfileRagRepository = userProfileRagRepository;
     this.jobHistoryRepository = jobHistoryRepository;
     this.jobFieldSanitizer = jobFieldSanitizer;
+    this.profileEmbeddingIndexService = profileEmbeddingIndexService;
   }
 
   @Transactional
@@ -79,9 +82,20 @@ public class UserProfileRagService {
           content,
           sha256(chunk.title() + "\n" + content),
           scoreHint(chunk.title()),
-          chunk.sourceType()
+          chunk.sourceType(),
+          chunk.chunkType(),
+          chunk.chunkWeight(),
+          chunk.metadataJson()
       );
       index++;
+    }
+
+    try {
+      profileEmbeddingIndexService.reindex(profileName);
+    } catch (RuntimeException e) {
+      // Embedding is an enhancement; a provider outage must not break keyword RAG.
+      org.slf4j.LoggerFactory.getLogger(UserProfileRagService.class)
+          .warn("Profile embedding index failed, keyword retrieval remains available.", e);
     }
 
     return new ProfileReindexResponse(
@@ -113,10 +127,13 @@ public class UserProfileRagService {
     }
 
     List<String> terms = tokenize(normalizedQuery);
+    UserProfile profile = userProfileRepository.findDefault().orElse(null);
+    List<String> positiveTerms = tokenize(profile == null ? "" : profile.positiveKeywords());
+    List<String> negativeTerms = tokenize(profile == null ? "" : profile.negativeKeywords());
     List<UserProfileChunk> indexedChunks = userProfileRagRepository.findChunksByProfileName(profileName);
     return indexedChunks.stream()
-        .map(chunk -> toSearchResponse(chunk, terms))
-        .filter(chunk -> chunk.score() > 0)
+        .map(chunk -> toSearchResponse(chunk, terms, positiveTerms, negativeTerms))
+        .filter(chunk -> chunk.score() != 0)
         .sorted(Comparator.comparingInt(ProfileSearchChunkResponse::score).reversed()
             .thenComparing(ProfileSearchChunkResponse::id))
         .limit(limit)
@@ -128,7 +145,12 @@ public class UserProfileRagService {
         .orElse("no-profile-index");
   }
 
-  private ProfileSearchChunkResponse toSearchResponse(UserProfileChunk chunk, List<String> terms) {
+  private ProfileSearchChunkResponse toSearchResponse(
+      UserProfileChunk chunk,
+      List<String> terms,
+      List<String> positiveTerms,
+      List<String> negativeTerms
+  ) {
     String title = normalize(chunk.title());
     String content = normalize(chunk.content());
     String titleLower = title.toLowerCase(Locale.ROOT);
@@ -143,43 +165,59 @@ public class UserProfileRagService {
       if (contentLower.contains(lower)) {
         score += 1;
       }
+      if (positiveTerms.contains(term) && (titleLower.contains(lower) || contentLower.contains(lower))) {
+        score += 2;
+      }
+      if (negativeTerms.contains(term) && (titleLower.contains(lower) || contentLower.contains(lower))) {
+        score -= 3;
+      }
     }
     if (score > 0 && chunk.scoreHint() != null) {
       score += chunk.scoreHint();
     }
 
+    double weight = chunk.chunkWeight() == null ? 1.0 : chunk.chunkWeight();
+    score = (int) Math.round(score * weight);
     return new ProfileSearchChunkResponse(
         chunk.id(),
         title,
         content,
         score,
-        chunk.sourceType()
+        chunk.sourceType(),
+        chunk.chunkType(),
+        null,
+        null,
+        null
     );
   }
 
-  private Map<String, String> buildChunkMap(UserProfile profile) {
-    Map<String, String> chunks = new LinkedHashMap<>();
-    chunks.put("目标岗位", profile.targetRoles());
-    chunks.put("目标城市", profile.preferredCities());
-    chunks.put("技能栈", profile.skills());
-    chunks.put("项目经历", profile.projects());
-    chunks.put("正向关键词", profile.positiveKeywords());
-    chunks.put("负向关键词", profile.negativeKeywords());
-    chunks.put("硬性排除关键词", profile.hardRejectKeywords());
-    chunks.put("出勤偏好", profile.schedulePreference());
-    chunks.put("补充说明", profile.manualText());
-    return chunks;
+  private List<ChunkDraft> buildChunkDrafts(UserProfile profile) {
+    return List.of(
+        draft("目标岗位", profile.targetRoles(), "TARGET", 1.0),
+        draft("目标城市", profile.preferredCities(), "TARGET", 1.0),
+        draft("技能栈", profile.skills(), "SKILL", 1.2),
+        draft("项目经历", profile.projects(), "PROJECT", 1.3),
+        draft("工作经历", profile.experience(), "EXPERIENCE", 1.1),
+        draft("教育背景", profile.education(), "EDUCATION", 0.8),
+        draft("简历原文", profile.resumeText(), "RESUME", 1.0),
+        draft("正向关键词", profile.positiveKeywords(), "KEYWORD", 1.0),
+        draft("负向关键词", profile.negativeKeywords(), "KEYWORD", 1.0),
+        draft("硬性排除关键词", profile.hardRejectKeywords(), "KEYWORD", 1.0),
+        draft("出勤偏好", profile.schedulePreference(), "TARGET", 1.0),
+        draft("补充说明", profile.manualText(), "RESUME", 1.0)
+    );
   }
 
-  private List<ChunkDraft> buildChunkDrafts(UserProfile profile) {
-    return buildChunkMap(profile).entrySet().stream()
-        .map(entry -> new ChunkDraft(entry.getKey(), entry.getValue(), "manual_profile"))
-        .collect(ArrayList::new, ArrayList::add, ArrayList::addAll);
+  private ChunkDraft draft(String title, String content, String type, double weight) {
+    String metadata = "{\"type\":\"" + type + "\",\"source\":\"resume\",\"weight\":" + weight + "}";
+    return new ChunkDraft(title, content, "manual_profile", type, weight, metadata);
   }
 
   private List<ChunkDraft> buildHistoryChunkDrafts() {
     return jobHistoryRepository.findRecentForRag(50).stream()
-        .map(record -> new ChunkDraft(historyChunkTitle(record), historyChunkContent(record), historySourceType(record)))
+        .map(record -> new ChunkDraft(historyChunkTitle(record), historyChunkContent(record),
+            historySourceType(record), "EXPERIENCE", 1.1,
+            "{\"type\":\"EXPERIENCE\",\"source\":\"history\",\"weight\":1.1}"))
         .toList();
   }
 
@@ -311,7 +349,10 @@ public class UserProfileRagService {
   private record ChunkDraft(
       String title,
       String content,
-      String sourceType
+      String sourceType,
+      String chunkType,
+      double chunkWeight,
+      String metadataJson
   ) {
   }
 }

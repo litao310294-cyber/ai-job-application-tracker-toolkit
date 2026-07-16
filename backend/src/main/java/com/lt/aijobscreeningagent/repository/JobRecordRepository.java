@@ -12,6 +12,7 @@ import java.sql.Statement;
 import java.sql.Timestamp;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
@@ -131,6 +132,28 @@ public class JobRecordRepository {
     return count != null && count > 0;
   }
 
+  public Optional<StructuredJobInfo> findStructuredJobInfo(long jobRecordId) {
+    List<StructuredJobInfo> records = jdbcTemplate.query("""
+        select job_title, company_name, salary, city, education, experience,
+               skills_json, tags_json, job_text, capture_source
+        from job_record
+        where id = ?
+        limit 1
+        """, (rs, rowNum) -> new StructuredJobInfo(
+        rs.getString("job_title"),
+        rs.getString("company_name"),
+        rs.getString("salary"),
+        rs.getString("city"),
+        rs.getString("education"),
+        rs.getString("experience"),
+        fromJson(rs.getString("skills_json")),
+        fromJson(rs.getString("tags_json")),
+        rs.getString("job_text"),
+        rs.getString("capture_source")
+    ), jobRecordId);
+    return records.stream().findFirst();
+  }
+
   public void updateRuleResult(long jobRecordId, Integer ruleScore, String ruleConclusion) {
     jdbcTemplate.update(
         "update job_record set rule_score = ?, rule_conclusion = ?, updated_at = now() where id = ?",
@@ -225,6 +248,18 @@ public class JobRecordRepository {
       return objectMapper.writeValueAsString(values == null ? List.of() : values);
     } catch (JsonProcessingException e) {
       throw new IllegalStateException("Failed to serialize analysis list field", e);
+    }
+  }
+
+  private List<String> fromJson(String json) {
+    if (json == null || json.isBlank()) {
+      return List.of();
+    }
+    try {
+      return objectMapper.readValue(json, objectMapper.getTypeFactory()
+          .constructCollectionType(List.class, String.class));
+    } catch (JsonProcessingException e) {
+      return List.of();
     }
   }
 }

@@ -13,6 +13,9 @@ public record UserProfile(
     String negativeKeywords,
     String hardRejectKeywords,
     String schedulePreference,
+    String experience,
+    String education,
+    String resumeText,
     String manualText,
     LocalDateTime createdAt,
     LocalDateTime updatedAt

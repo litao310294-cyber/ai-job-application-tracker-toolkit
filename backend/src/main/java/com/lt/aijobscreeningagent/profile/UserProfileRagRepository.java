@@ -91,6 +91,23 @@ public class UserProfileRagRepository {
       int scoreHint,
       String sourceType
   ) {
+    saveChunk(profileName, documentId, chunkIndex, title, content, contentHash, scoreHint,
+        sourceType, "RESUME", 1.0, "{}");
+  }
+
+  public void saveChunk(
+      String profileName,
+      Long documentId,
+      int chunkIndex,
+      String title,
+      String content,
+      String contentHash,
+      int scoreHint,
+      String sourceType,
+      String chunkType,
+      double chunkWeight,
+      String metadataJson
+  ) {
     jdbcTemplate.update("""
         insert into user_profile_chunk (
           profile_name,
@@ -101,8 +118,11 @@ public class UserProfileRagRepository {
           source_type,
           content_hash,
           score_hint,
+          chunk_type,
+          chunk_weight,
+          metadata_json,
           created_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, now())
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now())
         """,
         profileName,
         documentId,
@@ -111,7 +131,10 @@ public class UserProfileRagRepository {
         content,
         sourceType,
         contentHash,
-        scoreHint
+        scoreHint,
+        chunkType,
+        chunkWeight,
+        metadataJson
     );
   }
 
@@ -131,6 +154,15 @@ public class UserProfileRagRepository {
           source_type,
           content_hash,
           score_hint,
+          chunk_type,
+          chunk_weight,
+          metadata_json,
+          embedding_json,
+          embedding_model,
+          embedding_dimension,
+          embedding_status,
+          embedding_content_hash,
+          embedded_at,
           created_at
         from user_profile_chunk
         where profile_name = ?
@@ -168,8 +200,51 @@ public class UserProfileRagRepository {
         rs.getString("source_type"),
         rs.getString("content_hash"),
         rs.getInt("score_hint"),
+        rs.getString("chunk_type"),
+        rs.getObject("chunk_weight", Double.class),
+        rs.getString("metadata_json"),
+        rs.getString("embedding_json"),
+        rs.getString("embedding_model"),
+        (Integer) rs.getObject("embedding_dimension"),
+        rs.getString("embedding_status"),
+        rs.getString("embedding_content_hash"),
+        toLocalDateTime(rs.getTimestamp("embedded_at")),
         toLocalDateTime(rs.getTimestamp("created_at"))
     );
+  }
+
+  public void updateEmbedding(
+      long chunkId,
+      String embeddingJson,
+      String embeddingModel,
+      int embeddingDimension,
+      String embeddingStatus,
+      String embeddingContentHash
+  ) {
+    jdbcTemplate.update("""
+        update user_profile_chunk
+        set embedding_json = ?,
+            embedding_model = ?,
+            embedding_dimension = ?,
+            embedding_status = ?,
+            embedding_content_hash = ?,
+            embedded_at = now()
+        where id = ?
+        """, embeddingJson, embeddingModel, embeddingDimension, embeddingStatus,
+        embeddingContentHash, chunkId);
+  }
+
+  public void markEmbeddingFailed(long chunkId, String embeddingModel, int embeddingDimension,
+      String embeddingContentHash) {
+    jdbcTemplate.update("""
+        update user_profile_chunk
+        set embedding_model = ?,
+            embedding_dimension = ?,
+            embedding_status = 'FAILED',
+            embedding_content_hash = ?,
+            embedded_at = null
+        where id = ?
+        """, embeddingModel, embeddingDimension, embeddingContentHash, chunkId);
   }
 
   private LocalDateTime toLocalDateTime(Timestamp timestamp) {

@@ -5,6 +5,20 @@ public record ProfileSearchChunkResponse(
     String title,
     String content,
     int score,
-    String sourceType
+    String sourceType,
+    String chunkType,
+    Double semanticScore,
+    Double keywordScore,
+    Double finalScore
 ) {
+
+  public ProfileSearchChunkResponse(
+      Long id,
+      String title,
+      String content,
+      int score,
+      String sourceType
+  ) {
+    this(id, title, content, score, sourceType, null, null, null, score / 100d);
+  }
 }

@@ -8,6 +8,17 @@ public record JobAnalyzeProfileRag(
     String query,
     int chunkCount,
     List<JobAnalyzeProfileRagChunk> chunks,
-    String reason
+    String reason,
+    String retrievalMode
 ) {
+  public JobAnalyzeProfileRag(
+      boolean enabled,
+      String profileVersion,
+      String query,
+      int chunkCount,
+      List<JobAnalyzeProfileRagChunk> chunks,
+      String reason
+  ) {
+    this(enabled, profileVersion, query, chunkCount, chunks, reason, null);
+  }
 }

@@ -245,3 +245,23 @@ ai-job-screening-agent/
 ## Repository Description（仓库描述）
 
 Local-first, compliance-aware, Java backend powered lightweight AI job screening agent with Userscript integration, rule scoring, DeepSeek analysis, Redis cache, MySQL persistence, and Profile RAG-Lite.
+
+## Database Migrations
+
+数据库版本由 Flyway 在 Spring Boot 启动时自动管理。当前已有数据库包含 V2-V5 的字段，因此首次启动会以版本 5 建立 baseline，避免重复执行历史 SQL。
+
+以后新增表或字段时，只创建新的迁移文件，例如：
+
+```text
+backend/src/main/resources/db/migration/V6__add_feedback_memory.sql
+```
+
+不要直接修改线上数据库，也不要修改已经执行过的历史 migration。可使用以下 SQL 查看迁移状态：
+
+```sql
+select installed_rank, version, description, success, installed_on
+from flyway_schema_history
+order by installed_rank;
+```
+
+空数据库首次使用时，先执行 `backend/src/main/resources/schema.sql` 创建基础表；之后 Spring Boot 启动会自动执行 Flyway 迁移并创建版本历史。

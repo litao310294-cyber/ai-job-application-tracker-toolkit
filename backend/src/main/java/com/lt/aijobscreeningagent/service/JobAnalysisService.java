@@ -9,8 +9,10 @@ import com.lt.aijobscreeningagent.dto.JobRecordSummary;
 import com.lt.aijobscreeningagent.dto.LlmAnalyzeResult;
 import com.lt.aijobscreeningagent.llm.LlmClient;
 import com.lt.aijobscreeningagent.profile.ProfileSearchChunkResponse;
+import com.lt.aijobscreeningagent.profile.RagRetrievalService;
 import com.lt.aijobscreeningagent.profile.UserProfileRagService;
 import com.lt.aijobscreeningagent.repository.JobRecordRepository;
+import com.lt.aijobscreeningagent.service.rag.JobQueryBuilder;
 import java.util.List;
 import java.util.UUID;
 import org.slf4j.Logger;
@@ -29,19 +31,25 @@ public class JobAnalysisService {
   private final JobRecordRepository jobRecordRepository;
   private final JobAnalysisCacheService jobAnalysisCacheService;
   private final UserProfileRagService userProfileRagService;
+  private final RagRetrievalService ragRetrievalService;
+  private final JobQueryBuilder jobQueryBuilder;
 
   public JobAnalysisService(
       LlmProperties llmProperties,
       LlmClient llmClient,
       JobRecordRepository jobRecordRepository,
       JobAnalysisCacheService jobAnalysisCacheService,
-      UserProfileRagService userProfileRagService
+      UserProfileRagService userProfileRagService,
+      RagRetrievalService ragRetrievalService,
+      JobQueryBuilder jobQueryBuilder
   ) {
     this.llmProperties = llmProperties;
     this.llmClient = llmClient;
     this.jobRecordRepository = jobRecordRepository;
     this.jobAnalysisCacheService = jobAnalysisCacheService;
     this.userProfileRagService = userProfileRagService;
+    this.ragRetrievalService = ragRetrievalService;
+    this.jobQueryBuilder = jobQueryBuilder;
   }
 
   public JobAnalyzeResponse analyze(JobAnalyzeRequest request) {
@@ -182,11 +190,12 @@ public class JobAnalysisService {
     String profileQuery = buildProfileQuery(request);
     try {
       log.info("Profile RAG query: {}", abbreviate(profileQuery, 300));
-      List<ProfileSearchChunkResponse> chunks = userProfileRagService.searchProfileChunks(
+      RagRetrievalService.RagRetrievalResult retrieval = ragRetrievalService.retrieveWithTrace(
           DEFAULT_PROFILE_NAME,
           profileQuery,
           PROFILE_RAG_TOP_K
       );
+      List<ProfileSearchChunkResponse> chunks = retrieval.chunks();
       log.info("Profile RAG retrieved {} chunks.", chunks.size());
       JobAnalyzeProfileRag profileRag = new JobAnalyzeProfileRag(
           true,
@@ -194,7 +203,8 @@ public class JobAnalysisService {
           profileQuery,
           chunks.size(),
           toResponseChunks(chunks),
-          chunks.isEmpty() ? "No matched profile chunks." : null
+          chunks.isEmpty() ? "No matched profile chunks." : null,
+          retrieval.mode()
       );
       return new ProfileRagContext(formatProfileContext(chunks), profileRag);
     } catch (RuntimeException e) {
@@ -205,22 +215,25 @@ public class JobAnalysisService {
           profileQuery,
           0,
           List.of(),
-          "Profile RAG search failed, analyze continued without profile chunks."
+          "Profile RAG search failed, analyze continued without profile chunks.",
+          "FALLBACK_KEYWORD"
       );
       return new ProfileRagContext(noProfileContext(), profileRag);
     }
   }
 
   private String buildProfileQuery(JobAnalyzeRequest request) {
-    return String.join(" ",
-        valueOrEmpty(request.jobTitle()),
-        valueOrEmpty(request.city()),
-        valueOrEmpty(request.schedule()),
-        valueOrEmpty(request.duration()),
-        request.ruleScore() == null ? "" : String.valueOf(request.ruleScore()),
-        valueOrEmpty(request.ruleConclusion()),
-        valueOrEmpty(request.jobText())
-    ).trim();
+    if (request.capturedJobRecordId() != null) {
+      try {
+        var structured = jobRecordRepository.findStructuredJobInfo(request.capturedJobRecordId());
+        if (structured.isPresent()) {
+          return jobQueryBuilder.build(structured.get());
+        }
+      } catch (RuntimeException e) {
+        log.warn("Could not load structured job record for profile query; using request fields.");
+      }
+    }
+    return jobQueryBuilder.build(request);
   }
 
   private String formatProfileContext(List<ProfileSearchChunkResponse> chunks) {
@@ -258,7 +271,11 @@ public class JobAnalysisService {
             valueOrEmpty(chunk.title()),
             abbreviate(valueOrEmpty(chunk.content()), 200),
             chunk.score(),
-            valueOrEmpty(chunk.sourceType())
+            valueOrEmpty(chunk.sourceType()),
+            valueOrEmpty(chunk.chunkType()),
+            chunk.semanticScore(),
+            chunk.keywordScore(),
+            chunk.finalScore()
         ))
         .toList();
   }

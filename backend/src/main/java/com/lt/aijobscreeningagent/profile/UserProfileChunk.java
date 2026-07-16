@@ -12,6 +12,15 @@ public record UserProfileChunk(
     String sourceType,
     String contentHash,
     Integer scoreHint,
+    String chunkType,
+    Double chunkWeight,
+    String metadataJson,
+    String embeddingJson,
+    String embeddingModel,
+    Integer embeddingDimension,
+    String embeddingStatus,
+    String embeddingContentHash,
+    LocalDateTime embeddedAt,
     LocalDateTime createdAt
 ) {
 }
