@@ -13,6 +13,7 @@ import java.util.regex.Pattern;
 import com.lt.aijobscreeningagent.dto.JobHistoryRecord;
 import com.lt.aijobscreeningagent.repository.JobHistoryRepository;
 import com.lt.aijobscreeningagent.service.JobFieldSanitizer;
+import com.lt.aijobscreeningagent.service.feedback.FeedbackChunkBuilder;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -29,19 +30,22 @@ public class UserProfileRagService {
   private final JobHistoryRepository jobHistoryRepository;
   private final JobFieldSanitizer jobFieldSanitizer;
   private final ProfileEmbeddingIndexService profileEmbeddingIndexService;
+  private final FeedbackChunkBuilder feedbackChunkBuilder;
 
   public UserProfileRagService(
       UserProfileRepository userProfileRepository,
       UserProfileRagRepository userProfileRagRepository,
       JobHistoryRepository jobHistoryRepository,
       JobFieldSanitizer jobFieldSanitizer,
-      ProfileEmbeddingIndexService profileEmbeddingIndexService
+      ProfileEmbeddingIndexService profileEmbeddingIndexService,
+      FeedbackChunkBuilder feedbackChunkBuilder
   ) {
     this.userProfileRepository = userProfileRepository;
     this.userProfileRagRepository = userProfileRagRepository;
     this.jobHistoryRepository = jobHistoryRepository;
     this.jobFieldSanitizer = jobFieldSanitizer;
     this.profileEmbeddingIndexService = profileEmbeddingIndexService;
+    this.feedbackChunkBuilder = feedbackChunkBuilder;
   }
 
   @Transactional
@@ -58,7 +62,11 @@ public class UserProfileRagService {
         ));
     String profileName = profile.profileName();
 
-    List<ChunkDraft> chunks = buildChunkDrafts(profile);
+    List<ChunkDraft> chunks = new ArrayList<>(buildChunkDrafts(profile));
+    // Feedback memory is part of the profile index regardless of the optional
+    // historical-analysis flag. It is rebuilt from the source table so a full
+    // profile reindex does not lose the behavior memory chunks.
+    chunks.addAll(buildFeedbackChunkDrafts());
     if (includeHistory) {
       chunks.addAll(buildHistoryChunkDrafts());
     }
@@ -176,8 +184,9 @@ public class UserProfileRagService {
       score += chunk.scoreHint();
     }
 
+    // Weight is applied once by RagRetrievalService after both evidence
+    // channels have been normalized to the same 0..1 scale.
     double weight = chunk.chunkWeight() == null ? 1.0 : chunk.chunkWeight();
-    score = (int) Math.round(score * weight);
     return new ProfileSearchChunkResponse(
         chunk.id(),
         title,
@@ -187,6 +196,8 @@ public class UserProfileRagService {
         chunk.chunkType(),
         null,
         null,
+        null,
+        weight,
         null
     );
   }
@@ -197,12 +208,12 @@ public class UserProfileRagService {
         draft("目标城市", profile.preferredCities(), "TARGET", 1.0),
         draft("技能栈", profile.skills(), "SKILL", 1.2),
         draft("项目经历", profile.projects(), "PROJECT", 1.3),
-        draft("工作经历", profile.experience(), "EXPERIENCE", 1.1),
+        draft("工作经历", profile.experience(), "EXPERIENCE", 1.2),
         draft("教育背景", profile.education(), "EDUCATION", 0.8),
         draft("简历原文", profile.resumeText(), "RESUME", 1.0),
-        draft("正向关键词", profile.positiveKeywords(), "KEYWORD", 1.0),
-        draft("负向关键词", profile.negativeKeywords(), "KEYWORD", 1.0),
-        draft("硬性排除关键词", profile.hardRejectKeywords(), "KEYWORD", 1.0),
+        draft("正向关键词", profile.positiveKeywords(), "KEYWORD", 0.8),
+        draft("负向关键词", profile.negativeKeywords(), "KEYWORD", 0.8),
+        draft("硬性排除关键词", profile.hardRejectKeywords(), "KEYWORD", 0.8),
         draft("出勤偏好", profile.schedulePreference(), "TARGET", 1.0),
         draft("补充说明", profile.manualText(), "RESUME", 1.0)
     );
@@ -215,10 +226,33 @@ public class UserProfileRagService {
 
   private List<ChunkDraft> buildHistoryChunkDrafts() {
     return jobHistoryRepository.findRecentForRag(50).stream()
+        .filter(record -> !hasFeedback(record))
         .map(record -> new ChunkDraft(historyChunkTitle(record), historyChunkContent(record),
-            historySourceType(record), "EXPERIENCE", 1.1,
-            "{\"type\":\"EXPERIENCE\",\"source\":\"history\",\"weight\":1.1}"))
+            historySourceType(record), "EXPERIENCE", 1.2,
+            "{\"type\":\"EXPERIENCE\",\"source\":\"history\",\"weight\":1.2}"))
         .toList();
+  }
+
+  private List<ChunkDraft> buildFeedbackChunkDrafts() {
+    return jobHistoryRepository.findRecentForRag(50).stream()
+        .filter(this::hasFeedback)
+        .map(feedbackChunkBuilder::build)
+        .map(chunk -> new ChunkDraft(
+            chunk.title(),
+            chunk.content(),
+            chunk.sourceType(),
+            chunk.chunkType(),
+            chunk.chunkWeight(),
+            chunk.metadataJson()))
+        .toList();
+  }
+
+  private boolean hasFeedback(JobHistoryRecord record) {
+    return record != null
+        && (!normalize(record.feedbackNote()).isBlank()
+        || !normalize(record.applyStatus()).isBlank()
+        || !normalize(record.chatStatus()).isBlank()
+        || !normalize(record.interviewStatus()).isBlank());
   }
 
   private String historyChunkTitle(JobHistoryRecord record) {

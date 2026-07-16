@@ -8,19 +8,45 @@ import java.util.Locale;
 import java.util.regex.Pattern;
 import org.springframework.stereotype.Service;
 
+/** Builds a job-only query for profile retrieval; user resume content is never added here. */
 @Service
 public class JobQueryBuilder {
 
+  private static final int JD_SUMMARY_LIMIT = 800;
+  private static final List<String> TECHNICAL_TERMS = List.of(
+      "Java", "JavaScript", "TypeScript", "Spring", "Spring Boot", "SpringCloud", "Spring Cloud",
+      "MySQL", "PostgreSQL", "Redis", "MongoDB", "Python", "Go", "Golang", "C++", "RAG",
+      "Embedding", "Agent", "Tool Calling", "DeepSeek", "LangChain", "LlamaIndex", "Linux", "Git",
+      "Docker", "Kubernetes", "Kafka", "RabbitMQ", "向量数据库", "大模型", "机器学习", "深度学习"
+  );
+
   public String build(StructuredJobInfo job) {
-    if (job == null) {
+    return build(job, null);
+  }
+
+  /** Merges a captured database record with the current request without losing a richer JD. */
+  public String build(StructuredJobInfo job, JobAnalyzeRequest request) {
+    if (job == null && request == null) {
       return "";
     }
-    String rawJd = rawValue(job.rawJD());
+    String rawJd = firstNonBlank(job == null ? null : job.rawJD(), request == null ? null : request.jobText());
+    String title = firstNonBlank(job == null ? null : job.jobTitle(), request == null ? null : request.jobTitle());
+    String city = firstNonBlank(job == null ? null : job.city(), request == null ? null : request.city());
+    String education = job == null ? "" : job.education();
+    String experience = job == null ? "" : job.experience();
+    String skills = job == null ? "" : join(job.skills());
+    String tags = job == null ? "" : join(job.jobTags());
     return format(
-        job.jobTitle(), job.city(), job.education(), job.experience(),
-        String.join("、", job.skills()), String.join("、", job.jobTags()),
-        extractSection(rawJd, "职责", "工作内容"), extractSection(rawJd, "要求", "任职资格"),
-        technicalText(rawJd)
+        title,
+        city,
+        education,
+        experience,
+        skills,
+        tags,
+        extractSection(rawJd, "职责", "工作内容", "工作职责"),
+        extractSection(rawJd, "要求", "任职资格", "任职要求", "岗位要求"),
+        summarize(rawJd),
+        technicalText(rawJd, skills, title)
     );
   }
 
@@ -30,9 +56,16 @@ public class JobQueryBuilder {
     }
     String rawJd = rawValue(request.jobText());
     return format(
-        request.jobTitle(), request.city(), "", "",
-        "", "", extractSection(rawJd, "职责", "工作内容"),
-        extractSection(rawJd, "要求", "任职资格"), technicalText(rawJd)
+        request.jobTitle(),
+        request.city(),
+        "",
+        "",
+        "",
+        "",
+        extractSection(rawJd, "职责", "工作内容", "工作职责"),
+        extractSection(rawJd, "要求", "任职资格", "任职要求", "岗位要求"),
+        summarize(rawJd),
+        technicalText(rawJd, "", request.jobTitle())
     );
   }
 
@@ -45,6 +78,7 @@ public class JobQueryBuilder {
       String tags,
       String responsibilities,
       String requirements,
+      String jdSummary,
       String technicalText
   ) {
     List<String> lines = new ArrayList<>();
@@ -56,7 +90,8 @@ public class JobQueryBuilder {
     add(lines, "岗位标签：", tags);
     add(lines, "岗位职责：", responsibilities);
     add(lines, "岗位要求：", requirements);
-    add(lines, "技术相关内容：", technicalText);
+    add(lines, "JD文本摘要：", jdSummary);
+    add(lines, "技术关键词：", technicalText);
     return String.join("\n", lines).trim();
   }
 
@@ -74,20 +109,18 @@ public class JobQueryBuilder {
     }
     String headingPattern = String.join("|", headings);
     var matcher = Pattern.compile("(?is)(?:^|\\n)\\s*(?:岗位)?(?:" + headingPattern
-        + ")\\s*[:：]?\\s*(.*?)(?=\\n\\s*(?:岗位)?(?:职责|工作内容|要求|任职资格|任职要求|加分项|福利)\\s*[:：]?|$)")
+        + ")\\s*[:：]?\\s*(.*?)(?=\\n\\s*(?:岗位)?(?:职责|工作内容|工作职责|要求|任职资格|任职要求|岗位要求|加分项|福利)\\s*[:：]?|$)")
         .matcher(normalized);
     return matcher.find() ? matcher.group(1).trim() : "";
   }
 
-  private String technicalText(String rawJd) {
-    String normalized = value(rawJd);
+  private String technicalText(String rawJd, String structuredSkills, String title) {
+    String normalized = value(rawJd + " " + structuredSkills + " " + title);
     if (normalized.isBlank()) {
       return "";
     }
     StringBuilder result = new StringBuilder();
-    for (String token : List.of("Java", "Spring", "Spring Boot", "SpringCloud", "MySQL",
-        "Redis", "Python", "RAG", "Embedding", "Agent", "DeepSeek", "LangChain",
-        "Linux", "Git", "向量数据库", "大模型")) {
+    for (String token : TECHNICAL_TERMS) {
       if (normalized.toLowerCase(Locale.ROOT).contains(token.toLowerCase(Locale.ROOT))) {
         if (!result.isEmpty()) {
           result.append("、");
@@ -96,6 +129,22 @@ public class JobQueryBuilder {
       }
     }
     return result.toString();
+  }
+
+  private String summarize(String rawJd) {
+    String normalized = value(rawJd);
+    if (normalized.length() <= JD_SUMMARY_LIMIT) {
+      return normalized;
+    }
+    return normalized.substring(0, JD_SUMMARY_LIMIT) + "…";
+  }
+
+  private String join(List<String> values) {
+    return values == null ? "" : String.join("、", values);
+  }
+
+  private String firstNonBlank(String first, String fallback) {
+    return value(first).isBlank() ? value(fallback) : value(first);
   }
 
   private String value(String value) {

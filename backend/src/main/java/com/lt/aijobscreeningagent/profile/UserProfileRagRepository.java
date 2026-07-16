@@ -69,6 +69,36 @@ public class UserProfileRagRepository {
     return key.longValue();
   }
 
+  public Optional<Long> findLatestDocumentId(String profileName) {
+    List<Long> ids = jdbcTemplate.query("""
+        select id
+        from user_profile_document
+        where profile_name = ?
+        order by updated_at desc, id desc
+        limit 1
+        """, (rs, rowNum) -> rs.getLong("id"), profileName);
+    return ids.stream().findFirst();
+  }
+
+  public int findNextChunkIndex(String profileName, Long documentId) {
+    Integer next = jdbcTemplate.queryForObject("""
+        select coalesce(max(chunk_index) + 1, 0)
+        from user_profile_chunk
+        where profile_name = ? and document_id = ?
+        """, Integer.class, profileName, documentId);
+    return next == null ? 0 : next;
+  }
+
+  public void bumpLatestDocumentVersion(String profileName, String suffix) {
+    Optional<Long> documentId = findLatestDocumentId(profileName);
+    documentId.ifPresent(id -> jdbcTemplate.update("""
+        update user_profile_document
+        set content_hash = sha2(concat(coalesce(content_hash, ''), ?), 256),
+            updated_at = now()
+        where id = ?
+        """, suffix == null ? "" : suffix, id));
+  }
+
   public void saveChunk(
       String profileName,
       Long documentId,

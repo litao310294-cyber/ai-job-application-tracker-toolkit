@@ -7,10 +7,14 @@ import com.lt.aijobscreeningagent.service.embedding.EmbeddingException;
 import com.lt.aijobscreeningagent.service.embedding.EmbeddingService;
 import java.util.Comparator;
 import java.util.List;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 @Service
 public class VectorSearchService {
+
+  private static final Logger log = LoggerFactory.getLogger(VectorSearchService.class);
 
   private final EmbeddingProperties properties;
   private final EmbeddingService embeddingService;
@@ -33,6 +37,7 @@ public class VectorSearchService {
     if (!properties.isUsable()) {
       throw new EmbeddingException("Embedding is disabled or API key is missing");
     }
+    log.info("profile embedding query: {}", abbreviate(query, 1000));
     List<Float> queryVector = embeddingService.embed(query);
     List<ScoredChunk> scored = repository.findChunksByProfileName(profileName).stream()
         .filter(this::hasUsableEmbedding)
@@ -54,6 +59,8 @@ public class VectorSearchService {
         item.chunk().chunkType(),
         item.semanticScore(),
         null,
+        item.semanticScore(),
+        item.chunk().chunkWeight() == null ? 1.0d : item.chunk().chunkWeight(),
         item.semanticScore()
     )).toList();
   }
@@ -98,6 +105,11 @@ public class VectorSearchService {
       return 0d;
     }
     return dot / (Math.sqrt(leftNorm) * Math.sqrt(rightNorm));
+  }
+
+  private String abbreviate(String value, int maxLength) {
+    String normalized = value == null ? "" : value.replaceAll("\\s+", " ").trim();
+    return normalized.length() <= maxLength ? normalized : normalized.substring(0, maxLength) + "...";
   }
 
   private record ScoredChunk(UserProfileChunk chunk, double similarity) {
