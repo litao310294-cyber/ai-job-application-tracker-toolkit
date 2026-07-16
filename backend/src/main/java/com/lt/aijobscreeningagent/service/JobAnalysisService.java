@@ -47,7 +47,9 @@ public class JobAnalysisService {
   public JobAnalyzeResponse analyze(JobAnalyzeRequest request) {
     String profileVersion = loadProfileVersion();
     String cacheKey = jobAnalysisCacheService.buildCacheKey(request, profileVersion);
-    var cachedResponse = jobAnalysisCacheService.get(cacheKey);
+    var cachedResponse = request.capturedJobRecordId() == null
+        ? jobAnalysisCacheService.get(cacheKey)
+        : java.util.Optional.<JobAnalyzeResponse>empty();
     if (cachedResponse.isPresent()) {
       log.info("Job analyze Redis cache hit. profileVersion={}", profileVersion);
       return cachedResponse.get();
@@ -55,7 +57,13 @@ public class JobAnalysisService {
     log.info("Job analyze Redis cache miss. profileVersion={}", profileVersion);
 
     String taskId = UUID.randomUUID().toString();
-    long jobRecordId = jobRecordRepository.saveJobRecord(request);
+    long jobRecordId = request.capturedJobRecordId() != null
+        && jobRecordRepository.existsJobRecord(request.capturedJobRecordId())
+        ? request.capturedJobRecordId()
+        : jobRecordRepository.saveJobRecord(request);
+    if (request.capturedJobRecordId() != null && jobRecordId == request.capturedJobRecordId()) {
+      jobRecordRepository.updateRuleResult(jobRecordId, request.ruleScore(), request.ruleConclusion());
+    }
     ProfileRagContext profileRagContext = buildProfileRagContext(request, profileVersion);
     JobAnalyzeResponse response;
 

@@ -9,6 +9,7 @@ public record JobAnalyzeRequest(
     String duration,
     String jobText,
     Integer ruleScore,
-    String ruleConclusion
+    String ruleConclusion,
+    Long capturedJobRecordId
 ) {
 }

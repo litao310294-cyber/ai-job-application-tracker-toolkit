@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BOSS Job Screening Agent
 // @namespace    ai-job-screening-agent
-// @version      2.2.0
+// @version      2.3.0
 // @description  Local-first AI job screening panel for visible BOSS job pages.
 // @match        https://www.zhipin.com/*
 // @run-at       document-end
@@ -45,6 +45,339 @@
   let jobFitFeedbackError = '';
   let jobFitCollapsed = localStorage.getItem(STORAGE_COLLAPSED_KEY) === 'true';
   let updateTimer = null;
+  let jobCaptureLoading = false;
+  let jobCaptureResult = null;
+  let jobCaptureError = '';
+
+  // Page-context bridge for the structured capture layer. It is intentionally
+  // kept separate from the DOM extractor so Vue failure can fall back safely.
+  const VUE_BRIDGE_CHANNEL = 'AI_JOB_SCREENING_VUE_BRIDGE_V1';
+  let vueBridgeInjected = false;
+  let vueBridgeRequestSequence = 0;
+
+  function vuePageBridgeMain() {
+    'use strict';
+
+    const CHANNEL = 'AI_JOB_SCREENING_VUE_BRIDGE_V1';
+    const MAX_DEPTH = 6;
+    const MAX_NODES = 3000;
+    const MAX_ATTEMPTS = 24;
+    const SKIP_KEYS = new Set([
+      'parent', 'parentNode', 'ownerDocument', 'el', 'elm', 'componentInstance',
+      'subTree', 'vnode', 'children', 'childNodes', 'listeners', 'events',
+      'render', 'staticRenderFns', 'proxyMap', 'cache', 'computed', 'watchers'
+    ]);
+    const NOISE_TEXT = /(?:\u6536\u85cf|\u4e3e\u62a5|\u5fae\u4fe1|\u626b\u7801|\u5206\u4eab|\u7acb\u5373\u6c9f\u901a|\u7acb\u5373\u6295\u9012|BOSS|HR)/i;
+
+    const text = value => String(value == null ? '' : value)
+      .replace(/\u0000/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    const isObject = value => value !== null && (typeof value === 'object' || typeof value === 'function');
+
+    function safeGet(object, key) {
+      try {
+        return object && object[key];
+      } catch (error) {
+        return undefined;
+      }
+    }
+
+    function unwrapRef(value) {
+      let current = value;
+      for (let index = 0; index < 3; index += 1) {
+        if (!isObject(current) || !Object.prototype.hasOwnProperty.call(current, 'value')) break;
+        const next = safeGet(current, 'value');
+        if (next === current || next == null) break;
+        current = next;
+      }
+      return current;
+    }
+
+    function asText(value) {
+      if (typeof value === 'string' || typeof value === 'number') return text(value);
+      if (!value || typeof value !== 'object') return '';
+      return text(value.name || value.label || value.text || value.value || value.desc || value.description);
+    }
+
+    function asTextArray(value) {
+      const values = Array.isArray(value) ? value : (value == null ? [] : [value]);
+      const seen = new Set();
+      const result = [];
+      for (const item of values) {
+        const valueText = asText(item);
+        if (!valueText) continue;
+        if (valueText.length > 48 || NOISE_TEXT.test(valueText)) continue;
+        const key = valueText.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        result.push(valueText);
+      }
+      return result.slice(0, 60);
+    }
+
+    function ownValue(object, keys) {
+      for (const key of keys) {
+        const value = safeGet(object, key);
+        if (Array.isArray(value) && value.length) return value;
+        if (asText(value)) return value;
+      }
+      return '';
+    }
+
+    function nestedValue(object, keys) {
+      const source = unwrapRef(object);
+      const direct = ownValue(source, keys);
+      if (direct) return direct;
+      const nestedKeys = ['jobInfo', 'job', 'position', 'detail', 'data', 'info', 'brand', 'company'];
+      for (const nestedKey of nestedKeys) {
+        const nested = unwrapRef(safeGet(source, nestedKey));
+        if (!isObject(nested)) continue;
+        const value = ownValue(nested, keys);
+        if (value) return value;
+      }
+      return '';
+    }
+
+    function jobScore(object) {
+      if (!isObject(object)) return 0;
+      const keys = [
+        'jobName', 'positionName', 'salaryDesc', 'salary', 'brandName', 'companyName',
+        'postDescription', 'jobDescription', 'skills', 'jobLabels', 'jobDegree',
+        'degreeName', 'jobExperience', 'experienceName', 'locationName', 'cityName'
+      ];
+      let score = 0;
+      for (const key of keys) {
+        if (safeGet(object, key) != null) score += 1;
+      }
+      const raw = nestedValue(object, ['postDescription', 'jobDescription', 'description']);
+      if (asText(raw).length >= 80) score += 8;
+      if (nestedValue(object, ['jobName', 'positionName'])) score += 3;
+      return score;
+    }
+
+    function addAttempt(attempts, value) {
+      const item = text(value);
+      if (item && attempts.length < MAX_ATTEMPTS && !attempts.includes(item)) attempts.push(item);
+    }
+
+    function addCandidate(add, value, label) {
+      const unwrapped = unwrapRef(value);
+      if (Array.isArray(unwrapped)) {
+        add(unwrapped, label + '[]');
+        for (const [index, item] of unwrapped.entries()) {
+          if (index >= 80) break;
+          add(unwrapRef(item), label + '[' + index + ']');
+        }
+        return;
+      }
+      add(unwrapped, label);
+    }
+
+    function addVueDataCandidates(add, vue, label) {
+      const sources = [
+        ['root', vue],
+        ['proxy', safeGet(vue, 'proxy')],
+        ['ctx', safeGet(vue, 'ctx')],
+        ['setupState', safeGet(vue, 'setupState')],
+        ['data', safeGet(vue, 'data')],
+        ['$data', safeGet(vue, '$data')],
+        ['_data', safeGet(vue, '_data')],
+        ['props', safeGet(vue, 'props')]
+      ];
+      const keys = [
+        'jobDetail', '_jobDetail', 'jobList', '_jobList', 'jobData',
+        '_jobDataMap', 'currentJob', 'jobInfo', 'detail', 'value'
+      ];
+      for (const [sourceName, source] of sources) {
+        const unwrapped = unwrapRef(source);
+        if (!isObject(unwrapped)) continue;
+        for (const key of keys) {
+          const value = safeGet(unwrapped, key);
+          if (value != null) addCandidate(add, value, label + '.' + sourceName + '.' + key);
+        }
+      }
+    }
+
+    function collectRoots(attempts) {
+      const roots = [];
+      const seen = new Set();
+      const selectors = [
+        '[data-v-app]', '#wrap', '.job-detail', '.job-detail-box', '.job-primary',
+        '[class*="job-detail"]', '[class*="jobDetail"]', '[class*="job-primary"]',
+        'main', 'body'
+      ];
+      const add = (value, label) => {
+        if (!value || !isObject(value) || seen.has(value)) return;
+        seen.add(value);
+        roots.push(value);
+        addAttempt(attempts, label);
+      };
+      for (const selector of selectors) {
+        let nodes = [];
+        try {
+          nodes = Array.from(document.querySelectorAll(selector));
+        } catch (error) {
+          addAttempt(attempts, 'selector error: ' + selector);
+        }
+        for (const node of nodes.slice(0, 40)) {
+          const vue2 = safeGet(node, '__vue__');
+          const vue3 = safeGet(node, '__vueParentComponent');
+          if (vue2) {
+            add(vue2, selector + '.__vue__');
+            addVueDataCandidates(add, vue2, selector + '.__vue__');
+          }
+          if (vue3) {
+            add(vue3, selector + '.__vueParentComponent');
+            add(safeGet(vue3, 'proxy'), selector + '.proxy');
+            add(safeGet(vue3, 'ctx'), selector + '.ctx');
+            add(safeGet(vue3, 'setupState'), selector + '.setupState');
+            add(safeGet(vue3, 'data'), selector + '.data');
+            add(safeGet(vue3, 'props'), selector + '.props');
+            addVueDataCandidates(add, vue3, selector + '.__vueParentComponent');
+          }
+        }
+      }
+      add(safeGet(document, 'body'), 'document.body');
+      return roots;
+    }
+
+    function findJobObjects(root, attempts) {
+      const found = [];
+      const visited = new Set();
+      let inspected = 0;
+      function walk(value, depth) {
+        if (!isObject(value) || depth > MAX_DEPTH || inspected >= MAX_NODES || visited.has(value)) return;
+        visited.add(value);
+        inspected += 1;
+        const score = jobScore(value);
+        if (score >= 5) found.push({ object: value, score });
+        let keys = [];
+        try {
+          keys = Object.keys(value).slice(0, 120);
+        } catch (error) {
+          return;
+        }
+        for (const key of keys) {
+          const allowedPrivateKey = key === '_jobDetail' || key === '_jobList' || key === '_jobDataMap' || key === '_data';
+          if (SKIP_KEYS.has(key) || (key.startsWith('_') && !allowedPrivateKey)) continue;
+          const child = safeGet(value, key);
+          if (isObject(child)) walk(child, depth + 1);
+        }
+      }
+      walk(root, 0);
+      addAttempt(attempts, 'inspected Vue objects: ' + inspected);
+      return found;
+    }
+
+    function buildSnapshot(object) {
+      const jobTitle = asText(nestedValue(object, ['jobName', 'positionName', 'title', 'name']));
+      const companyName = asText(nestedValue(object, ['brandName', 'companyName', 'company']));
+      const salary = asText(nestedValue(object, ['salaryDesc', 'salary', 'salaryText']));
+      const city = asText(nestedValue(object, ['locationName', 'cityName', 'city', 'cityDesc']));
+      const education = asText(nestedValue(object, ['jobDegree', 'degreeName', 'education', 'degree']));
+      const experience = asText(nestedValue(object, ['jobExperience', 'experienceName', 'experience']));
+      const skills = asTextArray(nestedValue(object, ['skills', 'skillList', 'skillLabels']));
+      const jobTags = asTextArray(nestedValue(object, ['jobLabels', 'labels', 'tags']));
+      const rawJD = asText(nestedValue(object, ['postDescription', 'jobDescription', 'description', 'rawJD']));
+      return { jobTitle, companyName, salary, city, education, experience, skills, jobTags, rawJD };
+    }
+
+    function readSnapshot() {
+      const attempts = [];
+      const roots = collectRoots(attempts);
+      const candidates = [];
+      for (const root of roots) {
+        candidates.push(...findJobObjects(root, attempts));
+      }
+      candidates.sort((left, right) => {
+        const leftRaw = asText(nestedValue(left.object, ['postDescription', 'jobDescription', 'description'])).length;
+        const rightRaw = asText(nestedValue(right.object, ['postDescription', 'jobDescription', 'description'])).length;
+        return (right.score + Math.min(rightRaw / 100, 10)) - (left.score + Math.min(leftRaw / 100, 10));
+      });
+      const snapshot = candidates.length ? buildSnapshot(candidates[0].object) : null;
+      const found = Boolean(snapshot && (snapshot.jobTitle || snapshot.companyName || snapshot.rawJD));
+      if (!roots.length) addAttempt(attempts, 'no Vue marker found on candidate DOM nodes');
+      if (!candidates.length) addAttempt(attempts, 'no job-shaped Vue object found');
+      if (found) addAttempt(attempts, 'selected best job-shaped object');
+      return {
+        found,
+        snapshot,
+        attempts: attempts.slice(0, MAX_ATTEMPTS),
+        reason: found ? '' : 'Vue marker or job-shaped data was not found'
+      };
+    }
+
+    window.addEventListener('message', event => {
+      if (event.source !== window || !event.data || event.data.channel !== CHANNEL) return;
+      if (event.data.type !== 'request' || event.data.action !== 'readJobSnapshot') return;
+      let result;
+      try {
+        result = readSnapshot();
+      } catch (error) {
+        result = { found: false, snapshot: null, attempts: ['bridge error: ' + text(error && error.message)], reason: 'bridge error' };
+      }
+      window.postMessage({
+        channel: CHANNEL,
+        type: 'response',
+        action: 'readJobSnapshot',
+        requestId: event.data.requestId,
+        ...result
+      }, '*');
+    });
+  }
+
+  function injectVuePageBridge() {
+    if (vueBridgeInjected || !document.documentElement) return;
+    const script = document.createElement('script');
+    script.textContent = `(${vuePageBridgeMain.toString()})();`;
+    document.documentElement.appendChild(script);
+    script.remove();
+    vueBridgeInjected = true;
+  }
+
+  function readVueJobSnapshot(timeoutMs = 2000, diagnostic = true) {
+    injectVuePageBridge();
+    const requestId = `vue-${Date.now()}-${++vueBridgeRequestSequence}`;
+    return new Promise(resolve => {
+      let finished = false;
+      const finish = result => {
+        if (finished) return;
+        finished = true;
+        window.removeEventListener('message', onMessage);
+        resolve(result);
+      };
+      const onMessage = event => {
+        if (event.source !== window || !event.data || event.data.channel !== VUE_BRIDGE_CHANNEL) return;
+        if (event.data.type !== 'response' || event.data.action !== 'readJobSnapshot' || event.data.requestId !== requestId) return;
+        const result = {
+          status: event.data.found ? 'VUE_FOUND' : 'VUE_NOT_FOUND',
+          snapshot: event.data.snapshot || null,
+          attempts: Array.isArray(event.data.attempts) ? event.data.attempts : [],
+          reason: event.data.reason || ''
+        };
+        if (diagnostic && result.snapshot) console.table(result.snapshot);
+        if (diagnostic) console.log('[AI Job Screening] ' + result.status, result.reason || '');
+        finish(result);
+      };
+      window.addEventListener('message', onMessage);
+      window.setTimeout(() => {
+        finish({
+          status: 'VUE_NOT_FOUND',
+          snapshot: null,
+          attempts: ['bridge timeout after ' + timeoutMs + 'ms'],
+          reason: 'Vue bridge timeout'
+        });
+      }, timeoutMs);
+      window.postMessage({
+        channel: VUE_BRIDGE_CHANNEL,
+        type: 'request',
+        action: 'readJobSnapshot',
+        requestId
+      }, '*');
+    });
+  }
 
   const clean = (value) => String(value || '')
     .replace(/\uFFFD/g, '')
@@ -668,6 +1001,88 @@
     };
   }
 
+  const CAPTURE_NOISE_TEXT = /(?:收藏|举报|微信|扫码|分享|立即沟通|立即投递|BOSS|HR|登录|注册|首页|推荐|附近|筛选)/i;
+
+  function cleanCaptureList(value, skillOnly) {
+    const values = Array.isArray(value) ? value : (value ? [value] : []);
+    const result = [];
+    const seen = new Set();
+    for (const item of values) {
+      const itemText = clean(item);
+      if (!itemText || itemText.length > 48 || CAPTURE_NOISE_TEXT.test(itemText)) continue;
+      if (skillOnly && !/[A-Za-z]/.test(itemText)) continue;
+      const key = itemText.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push(itemText);
+    }
+    return result.slice(0, 60);
+  }
+
+  function arrayValue(value) {
+    return cleanCaptureList(value, false);
+  }
+
+  async function buildStructuredJobInfo(jobInfo) {
+    const domInfo = jobInfo || {};
+    let vueInfo = null;
+    try {
+      const vueResult = await readVueJobSnapshot(2200, false);
+      if (vueResult && vueResult.status === 'VUE_FOUND') {
+        vueInfo = vueResult.snapshot || null;
+      }
+    } catch (error) {
+      vueInfo = null;
+    }
+
+    const sources = { vue: 0, dom: 0 };
+    const pick = (vueValue, domValue, fieldName) => {
+      const vueText = clean(vueValue);
+      const vueValid = vueText && !(fieldName === 'companyName' && CAPTURE_NOISE_TEXT.test(vueText));
+      if (vueValid) {
+        sources.vue += 1;
+        return vueText;
+      }
+      const domText = clean(domValue);
+      const domValid = domText && !(fieldName === 'companyName' && CAPTURE_NOISE_TEXT.test(domText));
+      if (domValid) sources.dom += 1;
+      if (!domValid) return '';
+      return domText;
+    };
+    const pickArray = (vueValue, domValue, skillOnly) => {
+      const vueItems = cleanCaptureList(vueValue, skillOnly);
+      if (vueItems.length) {
+        sources.vue += 1;
+        return vueItems;
+      }
+      const domItems = cleanCaptureList(domValue, skillOnly);
+      if (domItems.length) sources.dom += 1;
+      return domItems;
+    };
+
+    return {
+      jobTitle: pick(vueInfo && vueInfo.jobTitle, domInfo.jobTitle, 'jobTitle'),
+      companyName: pick(vueInfo && vueInfo.companyName, domInfo.companyName, 'companyName'),
+      salary: pick(vueInfo && vueInfo.salary, domInfo.salary, 'salary'),
+      city: pick(vueInfo && vueInfo.city, domInfo.city, 'city'),
+      education: pick(vueInfo && vueInfo.education, domInfo.education, 'education'),
+      experience: pick(vueInfo && vueInfo.experience, domInfo.experience, 'experience'),
+      skills: pickArray(vueInfo && vueInfo.skills, domInfo.tags, true),
+      jobTags: pickArray(vueInfo && vueInfo.jobTags, domInfo.tags, false),
+      rawJD: pick(vueInfo && vueInfo.rawJD, domInfo.jdText || domInfo.jobText, 'rawJD'),
+      extractionMode: sources.vue && sources.dom ? 'MIXED' : (sources.vue ? 'VUE' : 'DOM')
+    };
+  }
+
+  function callJobCaptureBackend(structuredJobInfo) {
+    return requestJson({
+      method: 'POST',
+      url: `${BACKEND_BASE_URL}/api/job/capture`,
+      body: structuredJobInfo,
+      timeout: 15000
+    });
+  }
+
   function callAiAnalyzeBackend(payload) {
     return requestJson({ method: 'POST', url: `${BACKEND_BASE_URL}/api/job/analyze`, body: payload, timeout: 45000 });
   }
@@ -800,6 +1215,19 @@
     return '';
   }
 
+  function renderJobCaptureStatus() {
+    if (jobCaptureLoading) {
+      return '<div style="margin:8px 0;padding:7px 8px;border-radius:7px;background:#eff6ff;color:#1d4ed8;font-size:12px;">Job capture in progress...</div>';
+    }
+    if (jobCaptureResult) {
+      return `<div style="margin:8px 0;padding:7px 8px;border-radius:7px;background:#ecfdf5;color:#047857;font-size:12px;">Job capture succeeded: record ${escapeHtml(jobCaptureResult.jobRecordId)}, completeness ${escapeHtml(jobCaptureResult.completenessScore)}%, source ${escapeHtml(jobCaptureResult.extractionMode || '')}</div>`;
+    }
+    if (jobCaptureError) {
+      return `<div style="margin:8px 0;padding:7px 8px;border-radius:7px;background:#fff7ed;color:#c2410c;font-size:12px;">Job capture failed: ${escapeHtml(jobCaptureError)}</div>`;
+    }
+    return '';
+  }
+
   function renderFeedbackPanel(aiResult) {
     if (!aiResult) return '';
     return `
@@ -904,6 +1332,9 @@
       jobFitFeedbackSaving = false;
       jobFitFeedbackSaved = false;
       jobFitFeedbackError = '';
+      jobCaptureLoading = false;
+      jobCaptureResult = null;
+      jobCaptureError = '';
       resetFeedbackDraft();
       lastResultKey = resultKey;
     }
@@ -954,6 +1385,7 @@
         ${fieldWarning}
         ${renderScoreBreakdown(result)}
         ${renderRuleScreeningDetails(result)}
+        ${renderJobCaptureStatus()}
         <div style="margin:8px 0 4px;"><b>命中关键词：</b></div>
         <div>${renderTagList(result.positiveHits.concat(result.targetHits), '暂无明显技术关键词')}</div>
         <div style="margin:8px 0 4px;"><b>风险关键词：</b></div>
@@ -989,8 +1421,28 @@
       jobFitFeedbackError = '';
       resetFeedbackDraft();
       renderJobFitPanel(lastScoreResult);
+      let capturedJobRecordId = null;
+      jobCaptureLoading = true;
+      jobCaptureResult = null;
+      jobCaptureError = '';
+      renderJobFitPanel(lastScoreResult);
+      try {
+        const structuredJobInfo = await buildStructuredJobInfo(lastScoreResult.jobInfo);
+        const captureResult = await callJobCaptureBackend(structuredJobInfo);
+        if (!captureResult || captureResult.success !== true || !captureResult.jobRecordId) {
+          throw new Error('invalid capture response');
+        }
+        jobCaptureResult = captureResult;
+        capturedJobRecordId = captureResult.jobRecordId;
+      } catch (e) {
+        jobCaptureError = e && e.message ? e.message : 'capture request failed';
+      } finally {
+        jobCaptureLoading = false;
+        renderJobFitPanel(lastScoreResult);
+      }
       try {
         const payload = buildAiAnalyzePayload(lastScoreResult.jobInfo, lastScoreResult);
+        if (capturedJobRecordId) payload.capturedJobRecordId = capturedJobRecordId;
         jobFitAiResult = await callAiAnalyzeBackend(payload);
       } catch (e) {
         jobFitAiError = '后端未启动或 /api/job/analyze 调用失败，请确认本地服务运行在 http://localhost:8080。';
@@ -1067,9 +1519,13 @@
     buildRuleDetails,
     renderRuleScreeningDetails,
     scoreJob,
+    buildStructuredJobInfo,
+    callJobCaptureBackend,
     buildAiAnalyzePayload,
     callAiAnalyzeBackend,
     loadJobHistoryForResult,
-    renderFeedbackPanel
+    renderFeedbackPanel,
+    readVueJobSnapshot
   };
+  console.info('[AI Job Screening] Vue structured extractor ready: JobFitScoring.readVueJobSnapshot()');
 })();

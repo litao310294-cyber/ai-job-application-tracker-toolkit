@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lt.aijobscreeningagent.dto.JobAnalyzeRequest;
 import com.lt.aijobscreeningagent.dto.JobAnalyzeResponse;
 import com.lt.aijobscreeningagent.dto.JobRecordSummary;
+import com.lt.aijobscreeningagent.dto.StructuredJobInfo;
 import com.lt.aijobscreeningagent.service.JobFieldSanitizer;
 import java.sql.PreparedStatement;
 import java.sql.Statement;
@@ -78,6 +79,65 @@ public class JobRecordRepository {
       throw new IllegalStateException("Failed to get generated job_record id");
     }
     return key.longValue();
+  }
+
+  public long saveCapturedJobRecord(StructuredJobInfo jobInfo) {
+    String sql = """
+        insert into job_record (
+          job_title,
+          company_name,
+          salary,
+          city,
+          education,
+          experience,
+          skills_json,
+          tags_json,
+          capture_source,
+          job_text,
+          created_at,
+          updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now(), now())
+        """;
+
+    KeyHolder keyHolder = new GeneratedKeyHolder();
+    jdbcTemplate.update(connection -> {
+      PreparedStatement ps = connection.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS);
+      ps.setString(1, jobFieldSanitizer.sanitizeJobTitle(jobInfo.jobTitle()));
+      ps.setString(2, jobFieldSanitizer.sanitizeCompanyName(jobInfo.companyName()));
+      ps.setString(3, jobFieldSanitizer.sanitizeShortField(jobInfo.salary(), 100));
+      ps.setString(4, jobFieldSanitizer.sanitizeShortField(jobInfo.city(), 100));
+      ps.setString(5, jobFieldSanitizer.sanitizeShortField(jobInfo.education(), 100));
+      ps.setString(6, jobFieldSanitizer.sanitizeShortField(jobInfo.experience(), 100));
+      ps.setString(7, toJson(jobInfo.skills()));
+      ps.setString(8, toJson(jobInfo.jobTags()));
+      ps.setString(9, jobFieldSanitizer.sanitizeShortField(jobInfo.extractionMode(), 20));
+      ps.setString(10, jobInfo.rawJD());
+      return ps;
+    }, keyHolder);
+
+    Number key = keyHolder.getKey();
+    if (key == null) {
+      throw new IllegalStateException("Failed to get generated captured job_record id");
+    }
+    return key.longValue();
+  }
+
+  public boolean existsJobRecord(long jobRecordId) {
+    Integer count = jdbcTemplate.queryForObject(
+        "select count(*) from job_record where id = ?",
+        Integer.class,
+        jobRecordId
+    );
+    return count != null && count > 0;
+  }
+
+  public void updateRuleResult(long jobRecordId, Integer ruleScore, String ruleConclusion) {
+    jdbcTemplate.update(
+        "update job_record set rule_score = ?, rule_conclusion = ?, updated_at = now() where id = ?",
+        ruleScore,
+        ruleConclusion,
+        jobRecordId
+    );
   }
 
   public void saveJobAnalysis(long jobRecordId, JobAnalyzeResponse response) {
